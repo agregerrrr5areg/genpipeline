@@ -205,7 +205,7 @@ class FreeCADInterface:
                     results["stress_mean"] = float(np.mean(stress_vals))
 
             if hasattr(obj, 'DisplacementLengths'):
-                displacements = obj.DisplacementLengths
+                displacements = obj.DisplacementLength值
                 if displacements:
                     results["compliance"] = float(np.sum(displacements))
                     results["displacement_max"] = float(max(displacements))
@@ -352,7 +352,7 @@ if __name__ == "__main__":
     print("Geometry Metrics:")
     print(f"Volume: {GeometryMetrics.compute_volume(voxel_test):.2f}")
     print(f"Surface Area: {GeometryMetrics.compute_surface_area(voxel_test):.2f}")
-    print(f"Centroid: {Geometry优化设计: {GeometryMetrics.compute_centroid(voxel_test)}")
+    print(f"Centroid: {GeometryMetrics.compute_centroid(voxel_test)}")
 
     moi = GeometryMetrics.compute_moments_of_inertia(voxel_test)
     print(f"Moments of Inertia: {moi}")
