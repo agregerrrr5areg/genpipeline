@@ -10,6 +10,7 @@ A complete framework combining FreeCAD's FEMbyGEN topology optimization with PyT
 - **Performance Prediction**: Predict stress, compliance, and manufacturability
 - **GPU-Accelerated**: Full CUDA support for RTX 5080+ GPUs
 - **Manufacturing Constraints**: Apply real-world design constraints (min features, overhangs)
+- **New: Customizable Optimization Algorithm**: Support for multiple acquisition functions and dynamic parameter tuning
 
 ## Architecture Overview
 
@@ -106,7 +107,7 @@ python -c "import FreeCAD; print(f'FreeCAD: {FreeCAD.__version__}')"
    → Click "Initialize" (creates Parameters spreadsheet)
    → Define ranges: thickness: 1.5-3.5mm, radius: 3-7mm, etc.
    → Click "Generate" → Creates 50-100 design variants
-   → Click "FEA" → Runs simulations on all variants
+   → Click "FEA" → Runs simulations
    ```
 
 ### Phase 2: Run Pipeline
@@ -151,12 +152,37 @@ Edit `pipeline_config.json`:
   "freecad_project_dir": "./freecad_designs",
   "fem_data_output": "./fem_data",
   "voxel_resolution": 32,
+  "use_sdf": false,
   "latent_dim": 16,
   "batch_size": 8,
   "epochs": 100,
   "learning_rate": 0.001,
+  "beta_vae": 1.0,
   "device": "cuda",
-  "n_optimization_iterations": 50
+  "seed": 42,
+  "n_optimization_iterations": 50,
+  "n_init_points": 5,
+  "output_dir": "./optimization_results",
+  "checkpoint_dir": "./checkpoints",
+  "log_dir": "./logs",
+  "manufacturing_constraints": {
+    "min_feature_size_mm": 1.0,
+    "max_overhang_angle_deg": 45.0
+  },
+  "optimization": {
+    "acquisition_function": "UCB",  // Options: "UCB", "EI", "PI"
+    "beta": 0.1,
+    "use_botorch": true,
+    "num_restarts": 10,
+    "raw_samples": 512,
+    "max_iterations": 100,  // New parameter
+    "parallel_evaluations": 4  // New parameter
+  },
+  "performance_weights": {
+    "stress": 1.0,
+    "compliance": 0.1,
+    "mass": 0.01
+  }
 }
 ```
 
@@ -170,6 +196,8 @@ Edit `pipeline_config.json`:
 | `epochs` | 100 | Training epochs. Monitor tensorboard for convergence. |
 | `beta_vae` | 1.0 | KL weight. Lower = more diverse; Higher = sharper reconstructions |
 | `n_optimization_iterations` | 50 | Optimization steps. More = better but slower. |
+| `max_iterations` | 100 | Maximum number of iterations for optimization. |
+| `parallel_evaluations` | 4 | Number of parallel evaluations during optimization. |
 
 ## Usage Examples
 
@@ -180,7 +208,7 @@ python quickstart.py --step 2 --freecad-dir /path/to/designs
 python quickstart.py --step 3 --epochs 50
 ```
 
-### Example 2: Interactive optimization
+### Example 2: Interactive optimization with custom parameters
 
 ```python
 from vae_design_model import DesignVAE
@@ -191,8 +219,8 @@ import torch
 vae = DesignVAE(latent_dim=16)
 vae.load_state_dict(torch.load('checkpoints/vae_best.pth')['model_state_dict'])
 
-# Run optimization
-optimizer = DesignOptimizer(vae, fem_evaluator, device='cuda')
+# Run optimization with custom parameters
+optimizer = DesignOptimizer(vae, fem_evaluator, device='cuda', max_iterations=100, parallel_evaluations=4)
 best_z, best_obj = optimizer.run_optimization(n_iterations=20)
 ```
 
@@ -260,6 +288,7 @@ config['voxel_resolution'] = 64  # Increase resolution
 **Solution**: 
 - Increase initialization points: `optimizer.initialize_search(n_init_points=10)`
 - Increase acquisition function exploration: Change `beta` in UCB
+- Use parallel evaluations: Set `parallel_evaluations` to a higher value
 
 ## Advanced Features
 
@@ -306,6 +335,7 @@ Contributions welcome! Key areas:
 - [ ] Topology sensing (for assembly constraints)
 - [ ] ML-assisted mesh quality optimization
 - [ ] Real-time FEM prediction (neural operators)
+- [ ] Customizable optimization algorithms
 
 ## References
 
@@ -337,5 +367,5 @@ MIT License - See LICENSE file
 
 ---
 
-**Last Updated**: February 2025
+**Last Updated**: February 2025  
 **Tested With**: FreeCAD 1.0, PyTorch 2.1, CUDA 12.1, RTX 5080

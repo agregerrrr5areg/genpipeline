@@ -3,8 +3,6 @@ import numpy as np
 from pathlib import Path
 from typing import Tuple, List, Dict
 import logging
-from scipy.optimize import minimize
-import json
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -113,11 +111,13 @@ class PerformancePredictor:
 
 
 class DesignOptimizer:
-    def __init__(self, vae_model, fem_evaluator, device='cuda', latent_dim=16):
+    def __init__(self, vae_model, fem_evaluator, device='cuda', latent_dim=16, max_iterations=100, parallel_evaluations=4):
         self.vae = vae_model
         self.fem_evaluator = fem_evaluator
         self.device = device
         self.latent_dim = latent_dim
+        self.max_iterations = max_iterations
+        self.parallel_evaluations = parallel_evaluations
         self.vae.eval()
 
         self.predictor = PerformancePredictor(vae_model, device)
@@ -186,7 +186,7 @@ class DesignOptimizer:
             logger.info(f"Init point {i+1}: z_norm={np.linalg.norm(z):.3f}, obj={obj_value:.4f}")
 
         self.train_x = torch.from_numpy(np.array(self.x_history)).float()
-        self.train_y = torch.from_numpy(np.array(self.y_history)).float().unsqueeze(-1)
+        self.train_y = torch.from_numpy(np.array(self.x_history)).float().unsqueeze(-1)
 
         if BOTORCH_AVAILABLE:
             self.gp_model = SingleTaskGP(self.train_x, self.train_y)
@@ -207,7 +207,7 @@ class DesignOptimizer:
         candidates, _ = optimize_acqf(
             acq_func,
             bounds=bounds,
-            q=1,
+            q=self.parallel_evaluations,
             num_restarts=10,
             raw_samples=512,
         )
@@ -322,6 +322,10 @@ if __name__ == "__main__":
                        help="Output directory for results")
     parser.add_argument("--device", type=str, default="cuda",
                        help="Device to use")
+    parser.add_argument("--max-iterations", type=int, default=100,
+                       help="Maximum number of iterations for optimization")
+    parser.add_argument("--parallel-evaluations", type=int, default=4,
+                       help="Number of parallel evaluations during optimization")
 
     args = parser.parse_args()
 
@@ -335,7 +339,8 @@ if __name__ == "__main__":
     fem_eval = FEMEvaluator(freecad_exe_path="/path/to/FreeCAD", 
                            master_template=args.freecad_template)
 
-    optimizer = DesignOptimizer(vae, fem_eval, device=args.device, latent_dim=args.latent_dim)
+    optimizer = DesignOptimizer(vae, fem_eval, device=args.device, latent_dim=args.latent_dim,
+                               max_iterations=args.max_iterations, parallel_evaluations=args.parallel_evaluations)
 
     best_z, best_obj = optimizer.run_optimization(n_iterations=args.n_iterations)
 

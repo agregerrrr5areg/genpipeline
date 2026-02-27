@@ -24,7 +24,9 @@
     "beta": 0.1,
     "use_botorch": true,
     "num_restarts": 10,
-    "raw_samples": 512
+    "raw_samples": 512,
+    "max_iterations": 100,
+    "parallel_evaluations": 4
   },
   "performance_weights": {
     "stress": 1.0,
