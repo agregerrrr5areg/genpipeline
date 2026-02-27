@@ -7,6 +7,22 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def convert_windows_path_to_wsl(windows_path: str) -> str:
+    """
+    Convert a Windows path (e.g., 'C:\\path\\to\\file.FCStd') to a WSL2 path (e.g., '/mnt/c/path/to/file.FCStd').
+    """
+    if not windows_path:
+        return ""
+    # Replace backslashes with forward slashes and convert drive letter
+    wsl_path = windows_path.replace("\\", "/")
+    if wsl_path.startswith("file://"):
+        wsl_path = wsl_path[7:]
+    if len(wsl_path) > 1 and wsl_path[1] == ":":
+        drive_letter = wsl_path[0].upper()
+        wsl_path = "/mnt/" + drive_letter + wsl_path[2:]
+    return wsl_path
+
+
 class VoxelConverter:
     @staticmethod
     def voxel_to_mesh(voxel_grid: np.ndarray, voxel_size: float = 1.0) -> dict:
@@ -77,7 +93,10 @@ class FreeCADInterface:
             logger.error("FreeCAD not available")
             return False
 
-        mesh_data = VoxelConverter.voxel_to_mesh(voxel_grid, voxel_size=1.0/resolution)
+        # Convert Windows path to WSL path if needed
+        output_path = convert_windows_path_to_wsl(output_path)
+
+        mesh_data = VoxelConverter.voxel_to_mesh(voxel_grid, voxel_size=1.0 / resolution)
         if mesh_data is None:
             return False
 
@@ -90,7 +109,7 @@ class FreeCADInterface:
             )
             mesh_obj.Mesh = mesh
 
-            doc.saveAs(str(output_path))
+            doc.saveAs(output_path)
             doc.close()
             logger.info(f"Exported voxel grid to {output_path}")
             return True
@@ -110,6 +129,9 @@ class FreeCADInterface:
         except ImportError:
             logger.error("FreeCAD not available")
             return False
+
+        # Convert Windows path to WSL path if needed
+        template_path = convert_windows_path_to_wsl(template_path)
 
         try:
             doc = FreeCAD.newDocument()
@@ -140,8 +162,11 @@ class FreeCADInterface:
             logger.error("FreeCAD/FEM not available")
             return {}
 
+        # Convert Windows path to WSL path if needed
+        freecad_doc_path = convert_windows_path_to_wsl(freecad_doc_path)
+
         try:
-            doc = FreeCAD.open(str(freecad_doc_path))
+            doc = FreeCAD.open(freecad_doc_path)
 
             for analysis in doc.Objects:
                 if analysis.TypeId == "Fem::FemAnalysis":
@@ -327,7 +352,7 @@ if __name__ == "__main__":
     print("Geometry Metrics:")
     print(f"Volume: {GeometryMetrics.compute_volume(voxel_test):.2f}")
     print(f"Surface Area: {GeometryMetrics.compute_surface_area(voxel_test):.2f}")
-    print(f"Centroid: {GeometryMetrics.compute_centroid(voxel_test)}")
+    print(f"Centroid: {Geometry优化设计: {GeometryMetrics.compute_centroid(voxel_test)}")
 
     moi = GeometryMetrics.compute_moments_of_inertia(voxel_test)
     print(f"Moments of Inertia: {moi}")
