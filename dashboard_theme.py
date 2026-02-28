@@ -1,82 +1,78 @@
-"""dashboard_theme.py — Fusion 360-style dark theme for Streamlit."""
+"""dashboard_theme.py — dark monochrome theme."""
 
-BG       = "#1a1a2e"
-PANEL    = "#16213e"
-ACCENT   = "#e94560"
-TEXT     = "#eaeaea"
-MUTED    = "#888888"
-SUCCESS  = "#00b894"
-WARNING  = "#fdcb6e"
+BG      = "#000000"
+PANEL   = "#111111"
+ACCENT  = "#ffffff"
+TEXT    = "#ffffff"
+MUTED   = "#666666"
+SUCCESS = "#aaaaaa"
+WARNING = "#888888"
 
 CSS = f"""
 <style>
-/* Page background */
+/* Background */
 .stApp {{ background-color: {BG}; color: {TEXT}; }}
 
-/* Sidebar */
-section[data-testid="stSidebar"] {{
-    background-color: {PANEL};
-    border-right: 1px solid {ACCENT}22;
-}}
+/* Remove panel backgrounds */
+div[data-testid="stVerticalBlock"] {{ background-color: transparent; }}
+section[data-testid="stSidebar"] {{ background-color: {PANEL}; }}
 
-/* Columns / panels */
-div[data-testid="stVerticalBlock"] {{
-    background-color: {PANEL};
-    border-radius: 6px;
-}}
-
-/* Buttons */
+/* Buttons — plain text, no box */
 .stButton button {{
-    background-color: {ACCENT};
-    color: white;
-    border: none;
-    border-radius: 4px;
-    font-weight: 600;
+    background: none !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: {MUTED} !important;
+    font-size: 0.85rem;
+    padding: 2px 6px;
+    text-align: left;
 }}
 .stButton button:hover {{
-    background-color: {ACCENT}cc;
+    color: {TEXT} !important;
+    background: none !important;
+}}
+.stButton button:focus {{
+    box-shadow: none !important;
+    outline: none !important;
 }}
 
-/* Stop button (secondary) */
-button[kind="secondary"] {{
-    background-color: #333 !important;
+/* Download button — keep minimal */
+.stDownloadButton button {{
+    background: none !important;
+    border: 1px solid {MUTED} !important;
+    color: {MUTED} !important;
+    border-radius: 2px;
+    font-size: 0.8rem;
+}}
+.stDownloadButton button:hover {{
     color: {TEXT} !important;
-    border: 1px solid #555 !important;
+    border-color: {TEXT} !important;
 }}
 
 /* Inputs */
-.stSlider, .stNumberInput, .stSelectbox {{
-    color: {TEXT};
-}}
-
-/* Metric values */
-[data-testid="stMetricValue"] {{
-    color: {ACCENT};
-    font-size: 1.4rem;
-    font-weight: 700;
-}}
+.stSlider, .stNumberInput, .stSelectbox {{ color: {TEXT}; }}
+input, select {{ background-color: {PANEL} !important; color: {TEXT} !important; border-color: #333 !important; }}
 
 /* Progress bar */
-.stProgress > div > div {{ background-color: {ACCENT}; }}
+.stProgress > div > div {{ background-color: #444; }}
 
-/* Dataframe */
-.stDataFrame {{ background-color: {PANEL}; }}
+/* HR */
+hr {{ border-color: #222; }}
 
-/* Bottom bar separator */
-hr {{ border-color: {ACCENT}33; }}
+/* Metric */
+[data-testid="stMetricValue"] {{ color: {TEXT}; }}
 </style>
 """
 
-
 PLOTLY_LAYOUT = dict(
     paper_bgcolor=BG,
-    plot_bgcolor=PANEL,
-    font=dict(color=TEXT, family="monospace"),
+    plot_bgcolor=BG,
+    font=dict(color=MUTED, family="monospace", size=11),
     margin=dict(l=0, r=0, t=30, b=0),
     scene=dict(
         bgcolor=BG,
-        xaxis=dict(backgroundcolor=PANEL, gridcolor="#333", color=TEXT),
-        yaxis=dict(backgroundcolor=PANEL, gridcolor="#333", color=TEXT),
-        zaxis=dict(backgroundcolor=PANEL, gridcolor="#333", color=TEXT),
+        xaxis=dict(backgroundcolor=BG, gridcolor="#1a1a1a", color=MUTED, showticklabels=False),
+        yaxis=dict(backgroundcolor=BG, gridcolor="#1a1a1a", color=MUTED, showticklabels=False),
+        zaxis=dict(backgroundcolor=BG, gridcolor="#1a1a1a", color=MUTED, showticklabels=False),
     ),
 )

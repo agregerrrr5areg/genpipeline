@@ -101,8 +101,10 @@ def render_viewport():
             x, y, z, i, j, k = load_stl_for_plotly(stl_path)
             fig.add_trace(go.Mesh3d(
                 x=x, y=y, z=z, i=i, j=j, k=k,
-                color=ACCENT, opacity=0.9,
+                color="#cccccc", opacity=1.0,
                 flatshading=True,
+                lighting=dict(ambient=0.5, diffuse=0.8, specular=0.1, roughness=0.8),
+                lightposition=dict(x=1, y=2, z=3),
             ))
             title = Path(stl_path).stem
         except Exception as e:
@@ -125,7 +127,7 @@ def render_viewport():
 
     fig.update_layout(**PLOTLY_LAYOUT, height=430,
                       title=dict(text=title, font=dict(color=MUTED, size=12)))
-    st.plotly_chart(fig, use_container_width=True, key="viewport_chart")
+    st.plotly_chart(fig, width="stretch", key="viewport_chart")
 
 
 @st.fragment(run_every=0.5)
@@ -183,7 +185,7 @@ def render_properties():
                 st.download_button("Export STL", f.read(),
                                    file_name=f"{name}.stl",
                                    mime="model/stl",
-                                   use_container_width=True)
+                                   width="stretch")
 
 
 @st.fragment(run_every=0.5)
@@ -210,7 +212,7 @@ def render_bo_bar():
                 yaxis=dict(visible=False),
                 showlegend=False,
             )
-            st.plotly_chart(fig, use_container_width=True, key="sparkline_chart")
+            st.plotly_chart(fig, width="stretch", key="sparkline_chart")
 
     with info_col:
         best_val = best.objective if best else 0.0
@@ -225,16 +227,16 @@ st.markdown("**GenPipeline** — Generative Design")
 tb1, tb2, tb3, tb4, tb5, tb6 = st.columns([1, 1, 1.5, 1.5, 1, 2])
 
 with tb1:
-    run_clicked = st.button("Run BO", use_container_width=True)
+    run_clicked = st.button("Run BO", width="stretch")
 with tb2:
-    stop_clicked = st.button("Stop", use_container_width=True)
+    stop_clicked = st.button("Stop", width="stretch")
 with tb3:
     mode = st.selectbox("Mode", ["BO-only", "Full FEM"], label_visibility="collapsed")
 with tb4:
     n_iters = st.number_input("Iterations", min_value=5, max_value=500,
                               value=50, label_visibility="collapsed")
 with tb5:
-    validate_clicked = st.button("Validate", use_container_width=True)
+    validate_clicked = st.button("Validate", width="stretch")
 with tb6:
     status_text = app_state.status.upper()
     colour = SUCCESS if status_text == "RUNNING" else (ACCENT if status_text == "DONE" else MUTED)
@@ -284,14 +286,14 @@ with left_col:
     st.markdown("**Designs**")
     for v in variants:
         label = f"{v['_file']}  {v['stress_max']:.0f} MPa"
-        if st.button(label, key=f"sel_{v['_file']}", use_container_width=True):
+        if st.button(label, key=f"sel_{v['_file']}", width="stretch"):
             app_state.selected = v["_file"]
 
     st.markdown("---")
     st.markdown("**Generate**")
     h_val = st.slider("h mm", 5.0, 20.0, 10.0, 0.5)
     r_val = st.slider("r mm", 0.0, 8.0, 0.0, 0.5)
-    if st.button("Run FEM", use_container_width=True):
+    if st.button("Run FEM", width="stretch"):
         with st.spinner("Running FreeCAD FEM..."):
             try:
                 from freecad_bridge import run_variant, find_freecad_cmd
