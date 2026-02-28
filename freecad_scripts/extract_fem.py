@@ -24,10 +24,9 @@ def parse_args():
     parser.add_argument("--input",  required=True, help="Windows path to .FCStd file")
     parser.add_argument("--output", required=True, help="Windows path to output directory")
     # FreeCAD 0.x: argv[0]=script, argv[1:]=args
-    # FreeCAD 1.0: argv[0]=FreeCADCmd.exe, argv[1]=script, argv[2:]=args
-    args_list = sys.argv[1:]
-    if args_list and args_list[0].endswith('.py'):
-        args_list = args_list[1:]
+    # FreeCAD 1.0: argv[0]=freecad.exe, argv[1]=--console, argv[2]=script, argv[3:]=args
+    args_list = [a for a in sys.argv[1:]
+                 if not a.endswith(".exe") and not a.startswith("--console") and not a.endswith(".py")]
     return parser.parse_args(args_list)
 
 

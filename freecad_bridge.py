@@ -35,10 +35,12 @@ logger = logging.getLogger(__name__)
 
 # ── FreeCAD search paths (WSL /mnt/c/ view of Windows C:\) ────────────────────
 FREECAD_SEARCH_PATHS = [
-    "/mnt/c/Program Files/FreeCAD 1.0/bin/FreeCADCmd.exe",
+    # FreeCAD 1.0 uses freecad.exe (unified GUI+console launcher)
+    "/mnt/c/Program Files/FreeCAD 1.0/bin/freecad.exe",
+    "/mnt/c/Program Files (x86)/FreeCAD 1.0/bin/freecad.exe",
+    # FreeCAD 0.x used FreeCADCmd.exe (headless only)
     "/mnt/c/Program Files/FreeCAD 0.21/bin/FreeCADCmd.exe",
     "/mnt/c/Program Files/FreeCAD 0.20/bin/FreeCADCmd.exe",
-    "/mnt/c/Program Files (x86)/FreeCAD 1.0/bin/FreeCADCmd.exe",
     "/mnt/c/Program Files (x86)/FreeCAD 0.21/bin/FreeCADCmd.exe",
 ]
 
@@ -93,12 +95,15 @@ def _wsl_distro_name() -> str:
 
 def find_freecad_cmd(override: str = None) -> str:
     if override:
-        candidate = Path(override) / "bin" / "FreeCADCmd.exe"
-        if candidate.exists():
-            logger.info(f"Using FreeCAD at: {candidate}")
-            return str(candidate)
+        # FreeCAD 1.0: freecad.exe (run with --console for headless)
+        # FreeCAD 0.x: FreeCADCmd.exe
+        for exe in ("freecad.exe", "FreeCADCmd.exe"):
+            candidate = Path(override) / "bin" / exe
+            if candidate.exists():
+                logger.info(f"Using FreeCAD at: {candidate}")
+                return str(candidate)
         raise FileNotFoundError(
-            f"FreeCADCmd.exe not found at {candidate}\n"
+            f"freecad.exe / FreeCADCmd.exe not found under {override}/bin/\n"
             f"Check your --freecad-path argument."
         )
 
@@ -130,7 +135,8 @@ def run_extraction(freecad_cmd: str, fcstd_wsl: str,
     fcstd_win  = wsl_to_windows(fcstd_wsl)
     output_win = wsl_to_windows(output_wsl)
 
-    cmd = [freecad_cmd, extractor_win,
+    console_flag = ["--console"] if freecad_cmd.endswith("freecad.exe") else []
+    cmd = [freecad_cmd] + console_flag + [extractor_win,
            "--input",  fcstd_win,
            "--output", output_win]
 
@@ -201,9 +207,10 @@ def build_dataset(output_dir: Path, voxel_resolution: int = 32):
         return None, None
 
     dataset   = FEMDataset(samples, voxel_resolution=voxel_resolution)
-    split     = int(0.8 * len(dataset))
+    n = len(dataset)
+    split     = max(1, min(n - 1, int(0.8 * n)))  # at least 1 in each split
     train_ds, val_ds = torch.utils.data.random_split(
-        dataset, [split, len(dataset) - split]
+        dataset, [split, n - split]
     )
     train_loader = torch.utils.data.DataLoader(
         train_ds, batch_size=8, shuffle=True,  num_workers=0
@@ -224,39 +231,170 @@ def build_dataset(output_dir: Path, voxel_resolution: int = 32):
     return train_loader, val_loader
 
 
+# ── Variant generator ──────────────────────────────────────────────────────────
+
+VARIANT_SCRIPT = Path(__file__).parent / "freecad_scripts" / "run_fem_variant.py"
+
+
+def run_variant(freecad_cmd: str, h_mm: float, r_mm: float,
+                output_wsl: str) -> dict | None:
+    """Run one FEM variant (h_mm, r_mm) via FreeCADCmd. Returns parsed JSON or None."""
+    output_win  = wsl_to_windows(output_wsl)
+
+    # Copy variant script to Windows Temp so FreeCAD can access it via a plain Windows path.
+    # UNC paths (\\wsl.localhost\...) are not executed by FreeCAD.
+    variant_tmp_wsl = WIN_TEMP_WSL / "run_fem_variant.py"
+    shutil.copy(VARIANT_SCRIPT, variant_tmp_wsl)
+    variant_win = WIN_TEMP_WIN + "\\run_fem_variant.py"
+
+    # FreeCAD 1.0 intercepts --flag style args; pass params via a config file.
+    stem       = f"h{h_mm:.1f}_r{r_mm:.1f}".replace(".", "p")
+    cfg_wsl    = WIN_TEMP_WSL / f"fem_cfg_{stem}.cfg"
+    cfg_win    = WIN_TEMP_WIN + f"\\fem_cfg_{stem}.cfg"
+    with open(cfg_wsl, "w") as f:
+        json.dump({"h_mm": h_mm, "r_mm": r_mm, "output": output_win}, f)
+
+    # FreeCAD 1.0 (freecad.exe) needs --console for headless; 0.x FreeCADCmd.exe doesn't
+    console_flag = ["--console"] if freecad_cmd.endswith("freecad.exe") else []
+    cmd = [freecad_cmd] + console_flag + [variant_win, cfg_win]
+
+    logger.info(f"  h={h_mm:.1f} r={r_mm:.1f}")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        logger.error("FreeCAD timed out")
+        return None
+
+    for line in proc.stdout.splitlines():
+        if "[run_fem_variant]" in line:
+            logger.info(f"    {line}")
+    if proc.returncode != 0:
+        logger.error(f"FreeCAD exited {proc.returncode}:\n{proc.stderr[-500:]}")
+        return None
+
+    stem = f"h{h_mm:.1f}_r{r_mm:.1f}".replace(".", "p")
+    json_path = Path(output_wsl) / f"{stem}_fem_results.json"
+    if not json_path.exists():
+        logger.warning(f"No JSON at {json_path}")
+        return None
+
+    with open(json_path) as f:
+        return json.load(f)
+
+
+def generate_variants(freecad_cmd: str, output_dir: Path,
+                      n: int = 50,
+                      h_range: tuple = (5.0, 20.0),
+                      r_range: tuple = (0.0,  8.0),
+                      voxel_resolution: int = 32,
+                      seed: int = 42):
+    """
+    Generate n FEM variants by sampling (h_mm, r_mm) uniformly at random.
+
+    Args:
+        freecad_cmd:      path to FreeCADCmd.exe (WSL path)
+        output_dir:       WSL directory for JSON/STL output
+        n:                number of variants to generate
+        h_range:          (min, max) beam height in mm
+        r_range:          (min, max) hole radius in mm (0 = solid)
+        voxel_resolution: voxel grid size passed to build_dataset()
+        seed:             RNG seed for reproducibility
+    """
+    import random
+    random.seed(seed)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    ok, fail = 0, 0
+    for i in range(n):
+        h = round(random.uniform(*h_range), 2)
+        r = round(random.uniform(*r_range), 2)
+        logger.info(f"[{i+1}/{n}] variant h={h} r={r}")
+        result = run_variant(freecad_cmd, h, r, str(output_dir))
+        if result:
+            ok += 1
+        else:
+            fail += 1
+
+    logger.info(f"Generation: {ok} succeeded, {fail} failed")
+    train_loader, val_loader = build_dataset(output_dir, voxel_resolution)
+    if train_loader:
+        logger.info("Dataset ready. Next step:")
+        logger.info("  python quickstart.py --step 3 --epochs 100")
+    return train_loader, val_loader
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
         description="WSL2 bridge: extract FEM data from Windows FreeCAD"
     )
-    parser.add_argument(
-        "--designs-dir", required=True,
-        help="Directory containing .FCStd files (WSL path, e.g. /mnt/c/Users/you/designs)"
-    )
-    parser.add_argument(
-        "--output-dir", default="./fem_data",
-        help="Output directory for JSON, STL, and dataset (WSL path)"
-    )
-    parser.add_argument(
-        "--freecad-path", default=None,
-        help='Override FreeCAD install dir (WSL path, e.g. "/mnt/c/Program Files/FreeCAD 1.0")'
-    )
-    parser.add_argument("--voxel-resolution", type=int, default=32)
+    subparsers = parser.add_subparsers(dest="command")
+
+    # ── extract: pull results from existing .FCStd files ──────────────────
+    ext_p = subparsers.add_parser("extract", help="Extract FEM from existing .FCStd files")
+    ext_p.add_argument("--designs-dir", required=True)
+    ext_p.add_argument("--output-dir",  default="./fem_data")
+    ext_p.add_argument("--freecad-path", default=None)
+    ext_p.add_argument("--voxel-resolution", type=int, default=32)
+
+    # ── generate: create parametric cantilever variants from scratch ───────
+    gen_p = subparsers.add_parser("generate",
+        help="Generate parametric cantilever beam variants and run FEM")
+    gen_p.add_argument("--n-variants",       type=int,   default=50)
+    gen_p.add_argument("--h-min",            type=float, default=5.0,
+                       help="Min beam height mm")
+    gen_p.add_argument("--h-max",            type=float, default=20.0,
+                       help="Max beam height mm")
+    gen_p.add_argument("--r-min",            type=float, default=0.0,
+                       help="Min hole radius mm (0 = solid)")
+    gen_p.add_argument("--r-max",            type=float, default=8.0,
+                       help="Max hole radius mm")
+    gen_p.add_argument("--output-dir",       default="./fem_data")
+    gen_p.add_argument("--freecad-path",     default=None)
+    gen_p.add_argument("--voxel-resolution", type=int, default=32)
+    gen_p.add_argument("--seed",             type=int, default=42)
+
+    # Backwards-compat: no subcommand → treat as extract (requires --designs-dir)
+    parser.add_argument("--designs-dir",     default=None)
+    parser.add_argument("--output-dir",      default="./fem_data")
+    parser.add_argument("--freecad-path",    default=None)
+    parser.add_argument("--voxel-resolution",type=int, default=32)
+
     args = parser.parse_args()
 
     # ── Find FreeCAD ──────────────────────────────────────────────────────
+    freecad_path_arg = getattr(args, "freecad_path", None)
     try:
-        freecad_cmd = find_freecad_cmd(args.freecad_path)
+        freecad_cmd = find_freecad_cmd(freecad_path_arg)
     except FileNotFoundError as e:
         logger.error(str(e))
         return
 
-    # ── Deploy extractor ──────────────────────────────────────────────────
+    output_dir = Path(getattr(args, "output_dir", "./fem_data"))
+
+    # ── generate subcommand ───────────────────────────────────────────────
+    if args.command == "generate":
+        generate_variants(
+            freecad_cmd  = freecad_cmd,
+            output_dir   = output_dir,
+            n            = args.n_variants,
+            h_range      = (args.h_min, args.h_max),
+            r_range      = (args.r_min, args.r_max),
+            voxel_resolution = args.voxel_resolution,
+            seed         = args.seed,
+        )
+        return
+
+    # ── extract subcommand (or legacy positional mode) ────────────────────
+    designs_dir_arg = getattr(args, "designs_dir", None)
+    if not designs_dir_arg:
+        parser.error("Specify a subcommand (generate / extract) or --designs-dir")
+
     extractor_win = deploy_extractor()
 
-    # ── Collect .FCStd files ──────────────────────────────────────────────
-    designs_dir = Path(args.designs_dir)
+    designs_dir = Path(designs_dir_arg)
     if not designs_dir.exists():
         logger.error(f"Designs directory not found: {designs_dir}")
         return
@@ -267,8 +405,6 @@ def main():
         logger.error("No .FCStd files found.")
         return
 
-    # ── Extract ───────────────────────────────────────────────────────────
-    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     ok, fail = 0, 0
@@ -282,7 +418,6 @@ def main():
 
     logger.info(f"Extraction: {ok} succeeded, {fail} failed")
 
-    # ── Build dataset ──────────────────────────────────────────────────────
     train_loader, val_loader = build_dataset(output_dir, args.voxel_resolution)
     if train_loader:
         logger.info("Dataset ready. Next step:")
