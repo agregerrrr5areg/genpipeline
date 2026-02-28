@@ -111,13 +111,17 @@ class PerformancePredictor:
 
 
 class DesignOptimizer:
-    def __init__(self, vae_model, fem_evaluator, device='cuda', latent_dim=16, max_iterations=100, parallel_evaluations=4):
+    def __init__(self, vae_model, fem_evaluator, device='cuda', latent_dim=16, max_iterations=100, parallel_evaluations=4, sim_cfg=None):
         self.vae = vae_model
         self.fem_evaluator = fem_evaluator
         self.device = device
         self.latent_dim = latent_dim
         self.max_iterations = max_iterations
         self.parallel_evaluations = parallel_evaluations
+        self.sim_cfg = sim_cfg or {
+            "w_stress": 1.0, "w_compliance": 0.1, "w_mass": 0.01,
+            "max_stress_mpa": 1e9, "max_disp_mm": 1e9,
+        }
         self.vae.eval()
 
         self.predictor = PerformancePredictor(vae_model, device)
@@ -160,27 +164,31 @@ class DesignOptimizer:
 
     def objective_function(self, z: np.ndarray, real_eval=False) -> float:
         z = z.reshape(1, -1) if z.ndim == 1 else z
+        cfg   = self.sim_cfg
+        w_s   = cfg.get("w_stress", 1.0)
+        w_c   = cfg.get("w_compliance", 0.1)
+        w_m   = cfg.get("w_mass", 0.01)
+        max_s = cfg.get("max_stress_mpa", 1e9)
 
         if real_eval:
             geometry = self.decode_latent_to_geometry(z[0])
             params = self.geometry_to_parameters(geometry)
             results = self.fem_evaluator.evaluate(params)
 
-            stress = results["stress"]
+            stress     = results["stress"]
             compliance = results["compliance"]
+            mass       = results.get("mass", 0.0)
+            penalty    = 1e6 if stress > max_s else 0.0
 
-            multi_objective = stress + 0.1 * compliance
-
-            return multi_objective
+            return w_s * stress + w_c * compliance + w_m * mass + penalty
 
         else:
-            perf_pred = self.predictor.predict(z)
-            stress_pred = perf_pred[0, 0]
-            compliance_pred = perf_pred[0, 1]
+            perf_pred       = self.predictor.predict(z)
+            stress_pred     = float(perf_pred[0, 0])
+            compliance_pred = float(perf_pred[0, 1])
+            penalty         = 1e6 if stress_pred > max_s else 0.0
 
-            multi_objective = stress_pred + 0.1 * compliance_pred
-
-            return float(multi_objective)
+            return w_s * stress_pred + w_c * compliance_pred + penalty
 
     def initialize_search(self, n_init_points=5):
         logger.info(f"Initializing Bayesian optimization with {n_init_points} points...")

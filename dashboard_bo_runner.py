@@ -17,7 +17,8 @@ class BORunner:
 
     def __init__(self, state: AppState, vae, device: str,
                  n_iters: int = 50, mode: str = "bo-only",
-                 freecad_cmd: str = "", output_dir: str = "/tmp/bo_variants"):
+                 freecad_cmd: str = "", output_dir: str = "/tmp/bo_variants",
+                 sim_cfg: dict | None = None):
         self.state = state
         self.vae = vae
         self.device = device
@@ -25,6 +26,7 @@ class BORunner:
         self.mode = mode
         self.freecad_cmd = freecad_cmd
         self.output_dir = output_dir
+        self.sim_cfg = sim_cfg or {}
 
     def _decode_voxel(self, z: np.ndarray) -> np.ndarray | None:
         try:

@@ -266,7 +266,27 @@ with tb6:
 
 st.markdown("<hr style='margin:4px 0 8px 0'>", unsafe_allow_html=True)
 
+# ── Topology Optimisation toolbar row ─────────────────────────────────────────
+st.markdown("**Topology Optimisation**")
+topo_c1, topo_c2, topo_c3 = st.columns([1.5, 1, 3])
+with topo_c1:
+    topo_volfrac = st.slider("Volume fraction", 0.2, 0.7, 0.4, 0.05)
+with topo_c2:
+    topo_clicked = st.button("Run Topo Opt")
+with topo_c3:
+    topo_status = st.session_state.get("topo_status", "")
+    if topo_status:
+        st.markdown(f"_{topo_status}_")
+
 # ── Toolbar actions ───────────────────────────────────────────────────────────
+try:
+    from sim_config import load_config, save_config, PRESETS
+    sim_cfg = load_config()
+except ImportError:
+    save_config = None
+    PRESETS = {}
+    sim_cfg = {"force_n": 1000}
+
 if run_clicked and app_state.status != "running":
     app_state.reset(total_iters=int(n_iters))
     app_state.status = "running"
@@ -276,11 +296,37 @@ if run_clicked and app_state.status != "running":
         mode=mode.lower().replace(" ", "-"),
         freecad_cmd=str(Path(FREECAD_PATH) / "bin" / "freecad.exe") if mode == "Full FEM" else "",
         output_dir="/tmp/bo_variants",
+        sim_cfg=sim_cfg,
     )
     threading.Thread(target=runner.run, daemon=True).start()
 
 if stop_clicked:
     app_state.request_stop()
+
+if topo_clicked:
+    def _run_topo():
+        try:
+            st.session_state["topo_status"] = "Running topology optimisation..."
+            from topology_solver.solver import TopologySolver
+            from pathlib import Path
+            import json, time
+            ts_solver = TopologySolver(nx=32, ny=8, nz=8, n_iters=60)
+            stl_path = ts_solver.run(sim_cfg, output_dir=str(VARIANTS_DIR),
+                                     volfrac=topo_volfrac)
+            stem = Path(stl_path).stem.replace("_mesh", "")
+            json_path = VARIANTS_DIR / f"{stem}_fem_results.json"
+            json_path.write_text(json.dumps({
+                "stress_max": 0.0, "stress_mean": 0.0, "compliance": 0.0,
+                "displacement_max": 0.0, "mass": 0.0,
+                "parameters": {"h_mm": 0.0, "r_mm": 0.0},
+                "source": "topology_opt",
+            }, indent=2))
+            st.cache_data.clear()
+            st.session_state["topo_status"] = f"Done: {Path(stl_path).name}"
+        except Exception as e:
+            st.session_state["topo_status"] = f"Error: {e}"
+    import threading
+    threading.Thread(target=_run_topo, daemon=True).start()
 
 if validate_clicked and app_state.best is not None:
     with st.spinner("Running FreeCAD FEM on best design..."):
@@ -304,6 +350,42 @@ left_col, center_col, right_col = st.columns([2, 5, 3], gap="small")
 
 # Left: Design browser
 with left_col:
+    if PRESETS and save_config:
+        with st.expander("Settings", expanded=False):
+            preset_names = list(PRESETS.keys())
+            cur_mat = sim_cfg.get("material", "Steel")
+            preset_idx = preset_names.index(cur_mat) if cur_mat in preset_names else 0
+            preset = st.selectbox("Material", preset_names, index=preset_idx,
+                                  key="cfg_material")
+            if preset != cur_mat and preset in PRESETS:
+                p = PRESETS[preset]
+                sim_cfg.update({"material": preset, "E_mpa": p["E_mpa"],
+                                "poisson": p["poisson"],
+                                "density_kg_m3": p["density_kg_m3"],
+                                "yield_mpa": p["yield_mpa"],
+                                "max_stress_mpa": round(
+                                    p["yield_mpa"] / sim_cfg.get("safety_factor", 1.5), 2)})
+            sim_cfg["force_n"]       = st.number_input("Force (N)", 100.0, 1e6,
+                                                       float(sim_cfg.get("force_n", 1000)),
+                                                       100.0, key="cfg_force")
+            sim_cfg["safety_factor"] = st.number_input("Safety factor", 1.0, 5.0,
+                                                       float(sim_cfg.get("safety_factor", 1.5)),
+                                                       0.1, key="cfg_sf")
+            sim_cfg["max_stress_mpa"] = round(
+                sim_cfg.get("yield_mpa", 250) / sim_cfg["safety_factor"], 2)
+            sim_cfg["w_stress"]     = st.number_input("w_stress",    0.0, 10.0,
+                                                      float(sim_cfg.get("w_stress", 1.0)),
+                                                      0.1, key="cfg_ws")
+            sim_cfg["w_compliance"] = st.number_input("w_compliance", 0.0, 5.0,
+                                                      float(sim_cfg.get("w_compliance", 0.1)),
+                                                      0.05, key="cfg_wc")
+            sim_cfg["w_mass"]       = st.number_input("w_mass",       0.0, 1.0,
+                                                      float(sim_cfg.get("w_mass", 0.01)),
+                                                      0.005, key="cfg_wm")
+            if st.button("Save", key="cfg_save", width="stretch"):
+                save_config(sim_cfg)
+                st.success("Saved")
+
     st.markdown("**Designs**")
     for v in variants:
         label = f"{v['_file']}  {v['stress_max']:.0f} MPa"

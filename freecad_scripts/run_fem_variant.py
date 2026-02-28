@@ -79,7 +79,9 @@ def find_face(shape, normal_target, tol=0.05):
 
 # ── FEM setup + solve ─────────────────────────────────────────────────────────
 
-def run_fem(doc, shape_obj, h_mm, r_mm, output_dir):
+def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
+    if cfg is None:
+        cfg = {}
     import FreeCAD as App
     import Fem          # registers Fem::* C++ types
     import ObjectsFem
@@ -93,9 +95,9 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir):
     mat = ObjectsFem.makeMaterialSolid(doc, "FemMaterialSolid")
     mat.Material = {
         "Name":          "CalculiX-Steel",
-        "YoungsModulus": "210000 MPa",
-        "PoissonRatio":  "0.30",
-        "Density":       "7900 kg/m^3",
+        "YoungsModulus": f"{cfg.get('E_mpa', 210000)} MPa",
+        "PoissonRatio":  str(cfg.get('poisson', 0.30)),
+        "Density":       f"{cfg.get('density_kg_m3', 7900)} kg/m^3",
     }
     analysis.addObject(mat)
 
@@ -132,7 +134,7 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir):
     down_face  = find_face(shape_obj.Shape, App.Vector(0, 0, -1))
     force = ObjectsFem.makeConstraintForce(doc, "FEMConstraintForce")
     force.References = [(shape_obj, right_face)]
-    force.Force      = App.Units.Quantity("1000 N")
+    force.Force      = App.Units.Quantity(f"{cfg.get('force_n', 1000)} N")
     force.Direction  = (shape_obj, [down_face])
     analysis.addObject(force)
 
@@ -223,7 +225,7 @@ if __name__ == "__main__":
         feat.Shape = shape
         doc.recompute()
 
-        results = run_fem(doc, feat, h, r, out)
+        results = run_fem(doc, feat, h, r, out, cfg=cfg)
         sys.exit(0)
 
     except Exception as e:
