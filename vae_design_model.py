@@ -99,10 +99,17 @@ class DesignVAE(nn.Module):
         return mu, logvar
 
     def reparameterize(self, mu, logvar):
+        # Fused kernel is inference-only (no grad_fn); use it only inside
+        # torch.no_grad() contexts (e.g. validation, generation, decode_latent).
+        if mu.is_cuda and not torch.is_grad_enabled():
+            try:
+                from cuda_kernels.gpu_reparam import fused_reparameterize
+                return fused_reparameterize(mu, logvar)
+            except Exception:
+                pass
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
-        z = mu + eps * std
-        return z
+        return mu + eps * std
 
     def decode(self, z):
         h = self.fc_decode(z)

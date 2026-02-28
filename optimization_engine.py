@@ -136,6 +136,18 @@ class DesignOptimizer:
             geometry = self.vae.decode(z_tensor)
         return geometry.cpu().numpy()
 
+    def decode_to_mesh(self, z: np.ndarray):
+        """Decode latent z → voxels → triangle mesh via GPU Marching Cubes.
+
+        Returns:
+            verts: (N*3, 3) float32 array of vertex positions
+            faces: (N,   3) int32  array of face indices
+        """
+        from cuda_kernels import gpu_marching_cubes
+        voxels = self.decode_latent_to_geometry(z).squeeze()  # (D, H, W)
+        verts, faces = gpu_marching_cubes(voxels, isovalue=0.5)
+        return verts, faces
+
     def geometry_to_parameters(self, geometry: np.ndarray) -> Dict[str, float]:
         voxel_grid = geometry.squeeze()
 
@@ -289,17 +301,35 @@ class DesignOptimizer:
     def save_results(self, output_dir: str = "./optimization_results"):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+        best_idx = np.argmin(self.y_history)
+        best_z   = self.x_history[best_idx]
+
         results = {
             "x_history": [x.tolist() for x in self.x_history],
             "y_history": [float(y) for y in self.y_history],
-            "best_x": self.x_history[np.argmin(self.y_history)].tolist(),
+            "best_x": best_z.tolist(),
             "best_y": float(min(self.y_history)),
         }
 
         with open(Path(output_dir) / "optimization_history.json", 'w') as f:
+            import json
             json.dump(results, f, indent=2)
 
         self.fem_evaluator.save_history(Path(output_dir) / "fem_evaluations.json")
+
+        # Export best design as STL via GPU Marching Cubes
+        try:
+            import trimesh
+            verts, faces = self.decode_to_mesh(best_z)
+            if len(faces) > 0:
+                mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+                stl_path = Path(output_dir) / "best_design.stl"
+                mesh.export(str(stl_path))
+                logger.info(f"Best design exported to {stl_path} ({len(faces):,} triangles)")
+            else:
+                logger.warning("Best design produced empty mesh — skipping STL export")
+        except Exception as e:
+            logger.warning(f"STL export failed: {e}")
 
         logger.info(f"Results saved to {output_dir}")
 
