@@ -1,371 +1,230 @@
-# FEMbyGEN + PyTorch Generative Design Pipeline
+# GenPipeline — Generative Design via FEM + VAE + Bayesian Optimisation
 
-A complete framework combining FreeCAD's FEMbyGEN topology optimization with PyTorch-based generative models and Bayesian optimization for automated design discovery.
-
-## Features
-
-- **FEM-Driven Generation**: Leverage FEMbyGEN to create parametric design variations
-- **3D VAE**: Learn latent design space from FEM-validated geometries
-- **Bayesian Optimization**: Intelligently search design space using Gaussian processes
-- **Performance Prediction**: Predict stress, compliance, and manufacturability
-- **GPU-Accelerated**: Full CUDA support for RTX 5080+ GPUs
-- **Manufacturing Constraints**: Apply real-world design constraints (min features, overhangs)
-- **New: Customizable Optimization Algorithm**: Support for multiple acquisition functions and dynamic parameter tuning
-
-## Architecture Overview
-
-```
-FreeCAD (FEMbyGEN)
-    ↓
-Generate parametric variations
-    ↓
-Run FEM simulations (CalculiX)
-    ↓
-Extract mesh + performance metrics
-    ↓
-Voxelize geometries
-    ↓
-PyTorch Dataset
-    ↓
-Train 3D VAE
-    ↓
-Bayesian Optimization Loop
-    ↓
-Decode → FEM Evaluate → Update GP
-    ↓
-Export optimized design
-```
-
-## Installation
-
-### Prerequisites
-- FreeCAD 1.0+ (with FEMbyGEN addon)
-- Python 3.8+
-- CUDA 12.1+ (for GPU acceleration)
-
-### Step 1: Install FreeCAD & FEMbyGEN
-
-```bash
-# Windows / macOS / Linux
-# Download from https://www.freecad.org/
-
-# Install FEMbyGEN addon:
-# Tools → Addon Manager → Search "FEMbyGEN" → Install
-```
-
-### Step 2: Setup Python Environment
-
-```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install torch torchvision torchaudio pytorch-cuda==12.1 -i https://download.pytorch.org/whl/cu121
-pip install numpy scipy scikit-image scikit-learn
-pip install trimesh pyvista
-pip install botorch gpytorch
-pip install tensorboard
-
-# Optional: For better performance
-pip install numba
-```
-
-### Step 3: Verify Setup
-
-```bash
-python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
-python -c "import FreeCAD; print(f'FreeCAD: {FreeCAD.__version__}')"
-```
-
-## Quick Start
-
-### Phase 1: Prepare FreeCAD Model
-
-1. **Create parametric model**:
-   ```
-   Part Design Workbench
-   → Create sketch
-   → Constrain with parameters (e.g., thickness=2mm, radius=5mm)
-   → Pad/Pocket features
-   → Save as master_design.FCStd
-   ```
-
-2. **Setup FEM Analysis**:
-   ```
-   FEM Workbench
-   → Create Analysis
-   → Add fixed constraints
-   → Add loads (forces, pressure)
-   → Assign material (Steel, Aluminum)
-   → Create mesh (Gmsh, 2-5mm element size)
-   ```
-
-3. **Generate variations with FEMbyGEN**:
-   ```
-   FEMbyGEN Workbench
-   → Click "Initialize" (creates Parameters spreadsheet)
-   → Define ranges: thickness: 1.5-3.5mm, radius: 3-7mm, etc.
-   → Click "Generate" → Creates 50-100 design variants
-   → Click "FEA" → Runs simulations
-   ```
-
-### Phase 2: Run Pipeline
-
-```bash
-# Full automated pipeline
-python quickstart.py --all --config config.json
-
-# Or run step-by-step
-python quickstart.py --step 2  # Extract FEM data
-python quickstart.py --step 3  --epochs 100  # Train VAE
-python quickstart.py --step 4  --n-iter 50   # Optimize
-python quickstart.py --step 5  # Export results
-```
-
-## File Structure
-
-```
-.
-├── fembygen_pytorch_guide.md     # Detailed architecture & workflow
-├── fem_data_pipeline.py          # FEM data extraction & voxelization
-├── vae_design_model.py           # 3D VAE + performance predictor
-├── optimization_engine.py        # Bayesian optimization loop
-├── utils.py                      # Geometry utilities & constraints
-├── quickstart.py                 # End-to-end pipeline script
-├── config.yaml                   # Configuration parameters
-└── README.md                     # This file
-
-Data Flow:
-freecad_designs/                 # Input FreeCAD files (*.FCStd)
-fem_data/                        # Extracted voxel grids & metrics
-checkpoints/                     # Trained VAE weights
-optimization_results/            # Optimization history & best designs
-```
-
-## Configuration
-
-Edit `pipeline_config.json`:
-
-```json
-{
-  "freecad_project_dir": "./freecad_designs",
-  "fem_data_output": "./fem_data",
-  "voxel_resolution": 32,
-  "use_sdf": false,
-  "latent_dim": 16,
-  "batch_size": 8,
-  "epochs": 100,
-  "learning_rate": 0.001,
-  "beta_vae": 1.0,
-  "device": "cuda",
-  "seed": 42,
-  "n_optimization_iterations": 50,
-  "n_init_points": 5,
-  "output_dir": "./optimization_results",
-  "checkpoint_dir": "./checkpoints",
-  "log_dir": "./logs",
-  "manufacturing_constraints": {
-    "min_feature_size_mm": 1.0,
-    "max_overhang_angle_deg": 45.0
-  },
-  "optimization": {
-    "acquisition_function": "UCB",  // Options: "UCB", "EI", "PI"
-    "beta": 0.1,
-    "use_botorch": true,
-    "num_restarts": 10,
-    "raw_samples": 512,
-    "max_iterations": 100,  // New parameter
-    "parallel_evaluations": 4  // New parameter
-  },
-  "performance_weights": {
-    "stress": 1.0,
-    "compliance": 0.1,
-    "mass": 0.01
-  }
-}
-```
-
-### Key Parameters
-
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| `voxel_resolution` | 32 | 32³ voxel grid (fast), 64³ (accurate) |
-| `latent_dim` | 16 | Design space dimensionality. Increase if underfitting. |
-| `batch_size` | 8 | Increase for faster training (if VRAM allows) |
-| `epochs` | 100 | Training epochs. Monitor tensorboard for convergence. |
-| `beta_vae` | 1.0 | KL weight. Lower = more diverse; Higher = sharper reconstructions |
-| `n_optimization_iterations` | 50 | Optimization steps. More = better but slower. |
-| `max_iterations` | 100 | Maximum number of iterations for optimization. |
-| `parallel_evaluations` | 4 | Number of parallel evaluations during optimization. |
-
-## Usage Examples
-
-### Example 1: Train only (no optimization)
-
-```bash
-python quickstart.py --step 2 --freecad-dir /path/to/designs
-python quickstart.py --step 3 --epochs 50
-```
-
-### Example 2: Interactive optimization with custom parameters
-
-```python
-from vae_design_model import DesignVAE
-from optimization_engine import DesignOptimizer
-import torch
-
-# Load trained VAE
-vae = DesignVAE(latent_dim=16)
-vae.load_state_dict(torch.load('checkpoints/vae_best.pth')['model_state_dict'])
-
-# Run optimization with custom parameters
-optimizer = DesignOptimizer(vae, fem_evaluator, device='cuda', max_iterations=100, parallel_evaluations=4)
-best_z, best_obj = optimizer.run_optimization(n_iterations=20)
-```
-
-### Example 3: Design interpolation
-
-```python
-from vae_design_model import interpolate_designs
-import torch
-
-# Load VAE
-vae = DesignVAE(latent_dim=16)
-vae.load_state_dict(torch.load('checkpoints/vae_best.pth')['model_state_dict'])
-
-# Interpolate between two designs
-z1 = torch.randn(1, 16)  # Design A
-z2 = torch.randn(1, 16)  # Design B
-interpolated = interpolate_designs(vae, z1[0].numpy(), z2[0].numpy(), n_steps=10)
-
-# Interpolated shape sequence available for animation
-```
-
-## Performance Benchmarks
-
-| Hardware | Phase | Time | Notes |
-|----------|-------|------|-------|
-| CPU (i9-12900K) | FEMbyGEN (100 designs) | 2-4 hrs | CalculiX solver |
-| RTX 5080 | VAE Training (100 epochs) | 30 min | FP32, batch=8 |
-| RTX 5080 + CPU | Optimization (50 iters) | 1-2 hrs | Parallel FEM evals |
-
-**Total pipeline time**: ~4-6 hours for 100-design dataset
-
-### Memory Requirements
-
-| Component | VRAM | System RAM |
-|-----------|------|------------|
-| VAE training (batch=8) | 6 GB | 16 GB |
-| Optimization | 4 GB | 8 GB |
-| FEMbyGEN + CalculiX | - | 4-8 GB |
-
-## Troubleshooting
-
-### Issue: CUDA out of memory
-**Solution**: Reduce batch size or voxel resolution
-```python
-config['batch_size'] = 4  # 8 → 4
-config['voxel_resolution'] = 16  # 32 → 16
-```
-
-### Issue: FreeCAD module not found
-**Solution**: Ensure FreeCAD Python is in PATH
-```bash
-export PYTHONPATH=/usr/lib/freecad/lib:$PYTHONPATH  # Linux
-export PYTHONPATH=C:\Program Files\FreeCAD\lib:$PYTHONPATH  # Windows
-```
-
-### Issue: VAE training loss not decreasing
-**Solution**: Adjust hyperparameters
-```python
-config['learning_rate'] = 5e-4  # Reduce LR
-config['beta_vae'] = 0.5  # Reduce KL weight
-config['voxel_resolution'] = 64  # Increase resolution
-```
-
-### Issue: Optimization stuck at local minimum
-**Solution**: 
-- Increase initialization points: `optimizer.initialize_search(n_init_points=10)`
-- Increase acquisition function exploration: Change `beta` in UCB
-- Use parallel evaluations: Set `parallel_evaluations` to a higher value
-
-## Advanced Features
-
-### Custom Performance Metrics
-
-```python
-# In optimization_engine.py, modify objective function:
-def objective_function(self, z: np.ndarray, real_eval=False) -> float:
-    perf_pred = self.predictor.predict(z)
-    stress = perf_pred[0, 0]
-    compliance = perf_pred[0, 1]
-    
-    # Custom multi-objective:
-    # Minimize stress, minimize weight, maximize stiffness
-    multi_obj = stress + 0.05*weight - 0.02*stiffness
-    return multi_obj
-```
-
-### Manufacturing Constraints
-
-```python
-from utils import ManufacturabilityConstraints
-
-mfg = ManufacturabilityConstraints(
-    min_feature_size=1.0,  # mm
-    max_overhang_angle=45.0  # degrees
-)
-
-constrained_voxels = mfg.apply_constraints(voxel_grid)
-```
-
-### Latent Space Visualization
-
-```bash
-# Using tensorboard
-tensorboard --logdir ./logs
-# Open http://localhost:6006
-```
-
-## Contributing
-
-Contributions welcome! Key areas:
-- [ ] Multi-material optimization
-- [ ] Topology sensing (for assembly constraints)
-- [ ] ML-assisted mesh quality optimization
-- [ ] Real-time FEM prediction (neural operators)
-- [ ] Customizable optimization algorithms
-
-## References
-
-- FEMbyGEN: https://github.com/Serince/FEMbyGEN
-- 3D-VAE: https://arxiv.org/abs/1910.00935
-- BoTorch: https://botorch.org/
-- FreeCAD: https://www.freecad.org/
-
-## Citation
-
-```bibtex
-@software{fembygen_pytorch_2025,
-  title={FEMbyGEN + PyTorch Generative Design Pipeline},
-  author={Your Name},
-  year={2025},
-  url={https://github.com/yourusername/fembygen-pytorch}
-}
-```
-
-## License
-
-MIT License - See LICENSE file
-
-## Support
-
-- Issues: GitHub Issues
-- Discussions: FreeCAD Forum
-- Documentation: See `fembygen_pytorch_guide.md`
+A pipeline that combines FreeCAD FEM simulation with a 3D VAE and Bayesian
+optimisation to search for structurally optimal geometries.
 
 ---
 
-**Last Updated**: February 2025  
-**Tested With**: FreeCAD 1.0, PyTorch 2.1, CUDA 12.1, RTX 5080
+## Current State
+
+All the components exist and run individually. The loop is not yet closed.
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| FreeCAD FEM bridge | Working | WSL → Windows, ~1.4 s/variant |
+| FEM data generation | Partial | 10 cantilever variants generated |
+| Dataset | Too small | 4 voxel samples — VAE cannot learn from this |
+| 3D VAE | Trained but unreliable | 500 epochs on 4 samples; weights are essentially noise |
+| Bayesian optimisation | Runs | 28 iters completed; surrogate trained on 4 points is meaningless |
+| SIMP topology solver | Working | Produces STL; not integrated with FEM validation |
+| Active learning loop | Not built | BO → FEM → update dataset → retrain cycle doesn't exist yet |
+
+**Root problem:** The VAE and BO are only as good as the training data.
+With 4 samples they produce garbage. Everything else is scaffolding
+waiting for a real dataset.
+
+---
+
+## Architecture
+
+```
+FreeCAD FEM (freecad_bridge.py)
+    ↓  parametric variants → STL + stress/compliance/mass JSON
+fem_data_pipeline.py
+    ↓  voxelise 32³, build PyTorch dataset
+vae_design_model.py
+    ↓  train encoder/decoder + performance predictor head
+optimization_engine.py  ←─── BoTorch GP + UCB acquisition
+    ↓  propose z → decode → FEM validate → update GP
+Export best design as STL
+```
+
+---
+
+## Repository Structure
+
+```
+genpipeline/
+├── freecad_bridge.py          WSL→Windows FEM runner
+├── freecad_scripts/
+│   ├── run_fem_variant.py     Runs inside FreeCAD; builds cantilever, runs CalculiX
+│   └── extract_fem.py         Extracts results from existing .FCStd files
+├── fem_data_pipeline.py       Voxelisation + PyTorch dataset builder
+├── vae_design_model.py        3D convolutional VAE + performance predictor
+├── optimization_engine.py     BoTorch GP + UCB Bayesian optimisation
+├── sim_config.py              Material presets, load, weights — saved to sim_config.json
+├── topology/
+│   ├── simp_solver.py         3D SIMP density optimiser
+│   ├── mesh_export.py         Density field → STL via marching cubes
+│   └── solver.py              TopologySolver facade
+├── cuda_kernels/              Custom CUDA voxelisation + marching cubes (RTX 5080)
+├── blackwell_compat.py        RTX 5080 workaround — keeps BoTorch on CPU
+├── utils.py                   Geometry utilities, manufacturability checks
+├── quickstart.py              Orchestrates all pipeline steps
+├── pipeline_config.json       Hyperparameters
+├── sim_config.json            Simulation settings (auto-generated)
+├── tests/                     13 unit tests
+└── fem_variants/              Generated FEM results + STL meshes
+```
+
+---
+
+## Setup
+
+### Requirements
+
+- FreeCAD 1.0 (Windows) — headless via `freecad.exe --console`
+- Python 3.10+
+- CUDA 12.8 + PyTorch (RTX 5080 / Blackwell)
+
+### Install
+
+```bash
+python -m venv venv
+source venv/bin/activate
+
+# RTX 5080 / Blackwell — must use cu128
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+pip install numpy scipy scikit-image scikit-learn trimesh pyvista
+pip install botorch gpytorch tensorboard
+pip install numpy-stl
+```
+
+### FreeCAD path
+
+Set `FREECAD_PATH` in `freecad_bridge.py` to match your install:
+
+```
+/mnt/c/Users/<you>/AppData/Local/Programs/FreeCAD 1.0
+```
+
+### Run FEM variants
+
+```bash
+# Generate parametric cantilever variants (h_mm, r_mm sweeps)
+python freecad_bridge.py generate --output-dir fem_variants --n 50
+
+# Or single variant
+python freecad_bridge.py run --h-mm 12 --r-mm 2 --output-dir fem_variants
+```
+
+### Run pipeline
+
+```bash
+python quickstart.py --step 2   # Build dataset from fem_variants/
+python quickstart.py --step 3 --epochs 200   # Train VAE
+python quickstart.py --step 4 --n-iter 50    # Bayesian optimisation
+python quickstart.py --step 5                # Export best STL
+```
+
+---
+
+## Known Hardware Notes (RTX 5080 / Blackwell)
+
+`cublasDgemmStridedBatched` is broken for batch ≥ 2 in CUDA 12.8 +
+PyTorch 2.10. BoTorch GP models are kept on CPU via `blackwell_compat.py`.
+VAE training runs on GPU normally. Monitor pytorch/pytorch for a fix.
+
+---
+
+## Next Steps
+
+The project needs these things in order before it produces useful results.
+
+### 1 — Expand the FEM dataset (blocker for everything else)
+
+The VAE needs at minimum ~200 diverse samples to learn a useful latent
+space. Currently there are 4.
+
+```bash
+python freecad_bridge.py generate --n 200 \
+    --h-range 5 25 --r-range 0 10 --output-dir fem_variants
+python quickstart.py --step 2
+```
+
+Also consider adding geometry variation beyond h/r — ribs, fillets,
+cutouts — so the VAE learns a richer design space.
+
+### 2 — Retrain VAE on real data
+
+Once the dataset has 200+ samples, retrain from scratch with longer
+training and monitor reconstruction loss on validation set.
+
+```bash
+python quickstart.py --step 3 --epochs 500 --latent-dim 32
+```
+
+A working VAE should reconstruct held-out voxel grids with low binary
+cross-entropy and produce smooth interpolations in latent space.
+
+### 3 — Close the BO–FEM loop
+
+Right now `optimize_step()` uses the VAE performance predictor as its
+objective. That predictor is trained on 4 points and is meaningless.
+
+The loop needs to be:
+1. BO proposes latent vector `z`
+2. Decode `z` → voxel → extract geometry parameters
+3. Run real FreeCAD FEM on the geometry
+4. Feed actual stress/compliance back to update the GP
+
+This requires wiring `real_eval=True` into the BO loop and making sure
+`fem_evaluator` is populated. The infrastructure exists in
+`optimization_engine.py`; it just isn't connected.
+
+### 4 — Active learning cycle
+
+Once step 3 works, add a cycle that:
+- Runs BO to propose the most uncertain geometry
+- Validates it with FEM
+- Adds result to the training set
+- Periodically fine-tunes the VAE on the growing dataset
+
+This is the core loop that makes the system self-improving.
+
+### 5 — Improve mesh and stress accuracy
+
+Current FEM uses C3D4 linear tetrahedra. These give ~50–70% of the
+theoretical stress value for a cantilever. Switching to C3D10 (quadratic)
+or refining the mesh in high-stress regions would give trustworthy numbers.
+
+```python
+# In run_fem_variant.py
+mesh_obj.ElementOrder = "2nd"   # second-order tets
+mesh_obj.CharacteristicLengthMax = "3 mm"
+```
+
+### 6 — Multi-geometry support
+
+The current FEM script only handles a rectangular cantilever beam.
+A useful generative design system needs a wider shape vocabulary:
+L-brackets, plates with holes, rib structures. Each new geometry type
+needs its own FreeCAD script and voxelisation logic.
+
+### 7 — Topology → parametric export
+
+The SIMP solver produces density fields but these can't be manufactured
+directly. The missing step is converting the SIMP output into a clean
+parametric FreeCAD model (e.g. via skeleton extraction or feature
+recognition), which can then be FEM-validated and exported to STEP.
+
+---
+
+## Tests
+
+```bash
+source venv/bin/activate
+python -m pytest tests/ -v
+```
+
+13 tests covering sim_config, SIMP solver, mesh export, and topology facade.
+
+---
+
+## References
+
+- [FreeCAD](https://www.freecad.org/)
+- [BoTorch](https://botorch.org/)
+- [SIMP topology optimisation](https://doi.org/10.1007/s001580050176)
+- [β-VAE](https://openreview.net/forum?id=Sy2fchgcW)
