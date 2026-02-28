@@ -1,0 +1,11 @@
+.aider*
+
+# Model checkpoints — large binaries; only keep vae_best.pth
+checkpoints/vae_epoch_*.pth
+
+# Generated data (reproducible from source)
+fem_data/fem_dataset.pt
+logs/
+__pycache__/
+**/__pycache__/
+*.pyc

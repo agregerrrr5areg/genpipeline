@@ -301,7 +301,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    checkpoint = torch.load(args.dataset_path)
+    checkpoint = torch.load(args.dataset_path, weights_only=False)
     train_loader = checkpoint['train_loader']
     val_loader = checkpoint['val_loader']
 

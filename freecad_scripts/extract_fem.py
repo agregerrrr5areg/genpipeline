@@ -20,11 +20,15 @@ import argparse
 
 
 def parse_args():
-    # FreeCADCmd.exe passes the script path as argv[0], real args start at argv[1]
     parser = argparse.ArgumentParser(description="FEM extraction inside FreeCAD")
     parser.add_argument("--input",  required=True, help="Windows path to .FCStd file")
     parser.add_argument("--output", required=True, help="Windows path to output directory")
-    return parser.parse_args(sys.argv[1:])
+    # FreeCAD 0.x: argv[0]=script, argv[1:]=args
+    # FreeCAD 1.0: argv[0]=FreeCADCmd.exe, argv[1]=script, argv[2:]=args
+    args_list = sys.argv[1:]
+    if args_list and args_list[0].endswith('.py'):
+        args_list = args_list[1:]
+    return parser.parse_args(args_list)
 
 
 def extract(fcstd_path, output_dir):
@@ -98,13 +102,17 @@ def extract(fcstd_path, output_dir):
     if not exported:
         print("[extract_fem] WARNING: No exportable geometry found — STL not written.")
 
-    doc.close()
-
     # ── Write JSON ────────────────────────────────────────────────────────
     json_path = os.path.join(output_dir, f"{stem}_fem_results.json")
     with open(json_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"[extract_fem] Results saved: {json_path}")
+
+    try:
+        FreeCAD.closeDocument(doc.Name)
+    except Exception:
+        pass  # FreeCADCmd.exe exits immediately after, safe to ignore
+
     return results
 
 

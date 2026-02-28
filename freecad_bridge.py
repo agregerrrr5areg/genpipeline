@@ -56,7 +56,8 @@ def wsl_to_windows(wsl_path: str) -> str:
       /mnt/c/foo/bar  →  C:\\foo\\bar
       /home/user/...  →  \\\\wsl.localhost\\<distro>\\home\\user\\...
     """
-    p = str(wsl_path)
+    # Resolve to absolute so relative paths (./fem_data) become /home/...
+    p = str(Path(wsl_path).resolve())
     if p.startswith("/mnt/") and len(p) > 6 and p[6] in ("/", ""):
         drive  = p[5].upper()
         rest   = p[6:].replace("/", "\\")
