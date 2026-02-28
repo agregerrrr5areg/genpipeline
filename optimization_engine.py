@@ -3,6 +3,10 @@ import numpy as np
 from pathlib import Path
 from typing import Tuple, List, Dict
 import logging
+import json
+
+import freecad_bridge
+from blackwell_compat import botorch_device
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,75 +23,51 @@ except ImportError:
     logger.warning("BoTorch not available. Install via: pip install botorch")
 
 
-class FEMEvaluator:
-    def __init__(self, freecad_exe_path: str, master_template: str):
-        self.freecad_exe = freecad_exe_path
-        self.master_template = master_template
+class BridgeEvaluator:
+    """Evaluates designs using the FreeCAD bridge (WSL2 -> Windows)."""
+    def __init__(self, freecad_path: str = None, output_dir: str = "./optimization_results/fem"):
+        try:
+            self.freecad_cmd = freecad_bridge.find_freecad_cmd(freecad_path)
+        except Exception as e:
+            logger.error(f"Could not find FreeCAD: {e}")
+            self.freecad_cmd = None
+        
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.variant_win = freecad_bridge.deploy_variant_script()
         self.evaluation_history = []
 
     def evaluate(self, parameters: Dict[str, float]) -> Dict[str, float]:
-        try:
-            import FreeCAD
-            import FreeCADGui
-        except ImportError:
-            logger.error("FreeCAD not available. Cannot run FEM simulation.")
-            return {"stress": 0.0, "compliance": 0.0, "mass": 0.0}
-
-        try:
-            doc = FreeCAD.open(self.master_template)
-
-            for param_name, param_value in parameters.items():
-                for obj in doc.Objects:
-                    if hasattr(obj, 'Name') and obj.Name == "Parameters":
-                        if hasattr(obj, 'set'):
-                            obj.set(f'{param_name}', param_value)
-
-            doc.recompute()
-
-            stress_max = self._extract_stress(doc)
-            compliance = self._extract_compliance(doc)
-            mass = self._extract_mass(doc)
-
-            doc.close()
-
-            results = {
-                "stress": float(stress_max),
-                "compliance": float(compliance),
-                "mass": float(mass)
-            }
-
-            self.evaluation_history.append({
-                "parameters": parameters,
-                "results": results
-            })
-
-            return results
-
-        except Exception as e:
-            logger.error(f"FEM evaluation failed: {e}")
+        if not self.freecad_cmd:
+            logger.error("FreeCAD command not found. Returning dummy results.")
             return {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
 
-    def _extract_stress(self, doc) -> float:
-        for obj in doc.Objects:
-            if hasattr(obj, 'StressValues'):
-                stress_vals = obj.StressValues
-                if stress_vals:
-                    return float(max(stress_vals))
-        return 0.0
+        h_mm = float(parameters.get("h_mm", 10.0))
+        r_mm = float(parameters.get("r_mm", 3.0))
+        geom = parameters.get("geometry", "cantilever")
 
-    def _extract_compliance(self, doc) -> float:
-        for obj in doc.Objects:
-            if hasattr(obj, 'DisplacementLengths'):
-                displacements = obj.DisplacementLengths
-                if displacements:
-                    return float(np.sum(displacements))
-        return 0.0
+        logger.info(f"Running FEM evaluation: {geom} h={h_mm:.2f} r={r_mm:.2f}")
+        
+        result = freecad_bridge.run_variant(
+            self.freecad_cmd, h_mm, r_mm, str(self.output_dir), 
+            self.variant_win, geometry=geom
+        )
 
-    def _extract_mass(self, doc) -> float:
-        for obj in doc.Objects:
-            if hasattr(obj, 'Mass'):
-                return float(obj.Mass)
-        return 1.0
+        if result:
+            # Map result keys to the expected internal format
+            eval_res = {
+                "stress": float(result.get("stress_max", 1e6)),
+                "compliance": float(result.get("compliance", 1e6)),
+                "mass": float(result.get("mass", 1.0))
+            }
+            self.evaluation_history.append({
+                "parameters": parameters,
+                "results": eval_res
+            })
+            return eval_res
+        else:
+            logger.error("FEM simulation failed. Returning penalty.")
+            return {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
 
     def save_history(self, path: str):
         with open(path, 'w') as f:
@@ -141,26 +121,38 @@ class DesignOptimizer:
         return geometry.cpu().numpy()
 
     def decode_to_mesh(self, z: np.ndarray):
-        """Decode latent z → voxels → triangle mesh via GPU Marching Cubes.
-
-        Returns:
-            verts: (N*3, 3) float32 array of vertex positions
-            faces: (N,   3) int32  array of face indices
+        """Decode latent z → voxels → triangle mesh.
+        Tries GPU kernel first, falls back to skimage.
         """
-        from cuda_kernels import gpu_marching_cubes
         voxels = self.decode_latent_to_geometry(z).squeeze()  # (D, H, W)
-        verts, faces = gpu_marching_cubes(voxels, isovalue=0.5)
-        return verts, faces
+        
+        try:
+            from cuda_kernels import gpu_marching_cubes
+            verts, faces = gpu_marching_cubes(voxels, isovalue=0.5)
+            return verts, faces
+        except Exception as e:
+            logger.debug(f"GPU marching cubes failed ({e}), using skimage fallback")
+            from skimage import measure
+            try:
+                # skimage returns (verts, faces, normals, values)
+                verts, faces, _, _ = measure.marching_cubes(voxels, level=0.5)
+                return verts, faces
+            except Exception as e2:
+                logger.error(f"All marching cubes implementations failed: {e2}")
+                return np.array([]), np.array([])
 
-    def geometry_to_parameters(self, geometry: np.ndarray) -> Dict[str, float]:
-        voxel_grid = geometry.squeeze()
-
-        params = {
-            "thickness_mm": 2.0 + (voxel_grid.mean() * 1.0),
-            "radius_mm": 5.0 + (voxel_grid.std() * 3.0),
-            "feature_size_mm": 1.0 + (voxel_grid.max() * 2.0),
+    def geometry_to_parameters(self, z: np.ndarray) -> Dict[str, float]:
+        with torch.no_grad():
+            z_tensor = torch.from_numpy(z).float().to(self.device)
+            if z_tensor.dim() == 1:
+                z_tensor = z_tensor.unsqueeze(0)
+            params = self.vae.predict_parameters(z_tensor).cpu().numpy()[0]
+        
+        return {
+            "h_mm": float(params[0]),
+            "r_mm": float(params[1]),
+            "geometry": self.sim_cfg.get("geometry_type", "cantilever")
         }
-        return params
 
     def objective_function(self, z: np.ndarray, real_eval=False) -> float:
         z = z.reshape(1, -1) if z.ndim == 1 else z
@@ -171,8 +163,7 @@ class DesignOptimizer:
         max_s = cfg.get("max_stress_mpa", 1e9)
 
         if real_eval:
-            geometry = self.decode_latent_to_geometry(z[0])
-            params = self.geometry_to_parameters(geometry)
+            params = self.geometry_to_parameters(z[0])
             results = self.fem_evaluator.evaluate(params)
 
             stress     = results["stress"]
@@ -205,8 +196,8 @@ class DesignOptimizer:
 
             logger.info(f"Init point {i+1}: z_norm={np.linalg.norm(z):.3f}, obj={obj_value:.4f}")
 
-        self.train_x = torch.from_numpy(np.array(self.x_history)).float()
-        self.train_y = torch.from_numpy(np.array(self.x_history)).float().unsqueeze(-1)
+        self.train_x = torch.from_numpy(np.array(self.x_history)).double().to(botorch_device)
+        self.train_y = torch.from_numpy(np.array(self.y_history)).double().to(botorch_device).unsqueeze(-1)
 
         if BOTORCH_AVAILABLE:
             self.gp_model = SingleTaskGP(self.train_x, self.train_y)
@@ -222,12 +213,13 @@ class DesignOptimizer:
 
         acq_func = UpperConfidenceBound(self.gp_model, beta=0.1)
 
-        bounds = torch.tensor([[-3.0] * self.latent_dim, [3.0] * self.latent_dim], dtype=torch.float32)
+        bounds = torch.tensor([[-3.0] * self.latent_dim, [3.0] * self.latent_dim], 
+                               dtype=torch.float64).to(botorch_device)
 
         candidates, _ = optimize_acqf(
             acq_func,
             bounds=bounds,
-            q=self.parallel_evaluations,
+            q=1,
             num_restarts=10,
             raw_samples=512,
         )
@@ -236,9 +228,7 @@ class DesignOptimizer:
 
         logger.info(f"Candidate z_norm: {np.linalg.norm(best_candidate):.3f}")
 
-        geometry = self.decode_latent_to_geometry(best_candidate)
-        params = self.geometry_to_parameters(geometry)
-
+        params = self.geometry_to_parameters(best_candidate)
         results = self.fem_evaluator.evaluate(params)
         obj_value = results["stress"] + 0.1 * results["compliance"]
 
@@ -248,8 +238,8 @@ class DesignOptimizer:
         logger.info(f"New point: obj={obj_value:.4f}, stress={results['stress']:.2f}, "
                    f"compliance={results['compliance']:.4f}")
 
-        self.train_x = torch.from_numpy(np.array(self.x_history)).float()
-        self.train_y = torch.from_numpy(np.array(self.y_history)).float().unsqueeze(-1)
+        self.train_x = torch.from_numpy(np.array(self.x_history)).double().to(botorch_device)
+        self.train_y = torch.from_numpy(np.array(self.y_history)).double().to(botorch_device).unsqueeze(-1)
 
         self.gp_model = SingleTaskGP(self.train_x, self.train_y)
         mll = ExactMarginalLogLikelihood(self.gp_model.likelihood, self.gp_model)
@@ -266,8 +256,7 @@ class DesignOptimizer:
             z = np.random.randn(self.latent_dim) * 0.5
             z = np.clip(z, -3, 3)
 
-            geometry = self.decode_latent_to_geometry(z)
-            params = self.geometry_to_parameters(geometry)
+            params = self.geometry_to_parameters(z)
             results = self.fem_evaluator.evaluate(params)
             obj_value = results["stress"] + 0.1 * results["compliance"]
 

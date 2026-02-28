@@ -5,14 +5,15 @@
   "use_sdf": false,
   "latent_dim": 16,
   "batch_size": 8,
-  "epochs": 100,
+  "epochs": 500,
   "learning_rate": 0.001,
   "beta_vae": 1.0,
   "device": "cuda",
-  "seed": 42,
-  "n_optimization_iterations": 50,
-  "n_init_points": 5,
+  "n_optimization_iterations": 150,
   "output_dir": "./optimization_results",
+  "freecad_path": "/mnt/c/Users/PC-PC/AppData/Local/Programs/FreeCAD 1.0",
+  "seed": 42,
+  "n_init_points": 5,
   "checkpoint_dir": "./checkpoints",
   "log_dir": "./logs",
   "manufacturing_constraints": {
@@ -26,7 +27,7 @@
     "num_restarts": 10,
     "raw_samples": 512,
     "max_iterations": 100,
-    "parallel_evaluations": 4
+    "parallel_evaluations": 1
   },
   "performance_weights": {
     "stress": 1.0,

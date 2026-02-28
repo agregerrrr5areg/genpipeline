@@ -191,7 +191,7 @@ def step_4_optimize_designs(config: PipelineConfig):
     logger.info("=" * 60)
 
     try:
-        from optimization_engine import DesignOptimizer, FEMEvaluator
+        from optimization_engine import DesignOptimizer, BridgeEvaluator
         from vae_design_model import DesignVAE
     except ImportError:
         logger.error("optimization_engine.py or vae_design_model.py not found")
@@ -199,7 +199,7 @@ def step_4_optimize_designs(config: PipelineConfig):
 
     device = config['device']
 
-    checkpoint = torch.load('checkpoints/vae_best.pth', map_location=device)
+    checkpoint = torch.load('checkpoints/vae_best.pth', map_location=device, weights_only=False)
     vae = DesignVAE(
         input_shape=(config['voxel_resolution'],) * 3,
         latent_dim=config['latent_dim']
@@ -207,18 +207,18 @@ def step_4_optimize_designs(config: PipelineConfig):
     vae.load_state_dict(checkpoint['model_state_dict'])
     vae = vae.to(device)
 
-    master_template = str(Path(config['freecad_project_dir']) / 'master_design.FCStd')
-
-    fem_evaluator = FEMEvaluator(
-        freecad_exe_path='FreeCAD',
-        master_template=master_template
+    # Use BridgeEvaluator for WSL2 -> Windows communication
+    fem_evaluator = BridgeEvaluator(
+        freecad_path=config.config.get('freecad_path'),
+        output_dir=str(Path(config['output_dir']) / 'fem')
     )
 
     optimizer = DesignOptimizer(
         vae,
         fem_evaluator,
         device=device,
-        latent_dim=config['latent_dim']
+        latent_dim=config['latent_dim'],
+        sim_cfg={'geometry_type': config.config.get('geometry_type', 'cantilever')}
     )
 
     logger.info("Starting optimization...")
@@ -252,7 +252,7 @@ def step_5_export_design(config: PipelineConfig, best_z):
 
     device = config['device']
 
-    checkpoint = torch.load('checkpoints/vae_best.pth', map_location=device)
+    checkpoint = torch.load('checkpoints/vae_best.pth', map_location=device, weights_only=False)
     vae = DesignVAE(
         input_shape=(config['voxel_resolution'],) * 3,
         latent_dim=config['latent_dim']
@@ -390,10 +390,11 @@ Examples:
     elif args.step == 2:
         data_result = step_2_extract_fem_data(config)
     elif args.step == 3:
-        checkpoint = torch.load('fem_data/fem_dataset.pt')
+        checkpoint = torch.load('fem_data/fem_dataset.pt', weights_only=False)
         model = step_3_train_vae(config, checkpoint['train_loader'], checkpoint['val_loader'])
     elif args.step == 4:
         best_z, best_obj = step_4_optimize_designs(config)
+        np.save(Path(config['output_dir']) / 'best_z.npy', best_z)
     elif args.step == 5:
         import numpy as np
         best_z = np.load('optimization_results/best_z.npy')

@@ -59,6 +59,42 @@ def make_shape(h_mm, r_mm):
     return shape
 
 
+def make_lbracket_shape(arm_len=80.0, arm_h=15.0, thickness=10.0):
+    """L-bracket: horizontal arm + vertical arm, fixed at corner."""
+    import Part
+    h_arm = Part.makeBox(arm_len, thickness, arm_h)          # horizontal
+    v_arm = Part.makeBox(thickness, thickness, arm_len)       # vertical
+    shape = h_arm.fuse(v_arm)
+    return shape
+
+def make_tapered_beam_shape(length=100.0, h_start=20.0, h_end=8.0, width=20.0):
+    """Beam that tapers from h_start at x=0 to h_end at x=length."""
+    import Part
+    import FreeCAD as App
+    pts = [
+        App.Vector(0, 0, 0), App.Vector(length, 0, 0),
+        App.Vector(length, 0, h_end), App.Vector(0, 0, h_start),
+    ]
+    face = Part.makePolygon(pts + [pts[0]])
+    face = Part.Face(face)
+    shape = face.extrude(App.Vector(0, width, 0))
+    return shape
+
+def make_ribbed_plate_shape(length=100.0, width=20.0, plate_h=5.0,
+                             rib_h=12.0, rib_w=4.0, n_ribs=3):
+    """Flat plate with evenly spaced ribs."""
+    import Part
+    plate = Part.makeBox(length, width, plate_h)
+    spacing = length / (n_ribs + 1)
+    ribs = plate
+    for k in range(n_ribs):
+        x = spacing * (k + 1)
+        rib = Part.makeBox(rib_w, width, rib_h,
+                           __import__('FreeCAD').Vector(x - rib_w/2, 0, plate_h))
+        ribs = ribs.fuse(rib)
+    return ribs
+
+
 def find_face(shape, normal_target, tol=0.05):
     """Return 'FaceN' whose outward normal is closest to normal_target."""
     import FreeCAD as App
@@ -86,7 +122,8 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
     import Fem          # registers Fem::* C++ types
     import ObjectsFem
 
-    stem = f"h{h_mm:.1f}_r{r_mm:.1f}".replace(".", "p")
+    geom_type = cfg.get("geometry", "cantilever")
+    stem = f"{geom_type[:4]}_h{h_mm:.1f}_r{r_mm:.1f}".replace(".", "p")
 
     # ── Analysis container ────────────────────────────────────────────────
     analysis = ObjectsFem.makeAnalysis(doc, "FemAnalysis")
@@ -104,8 +141,9 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
     # ── Mesh (Gmsh) ───────────────────────────────────────────────────────
     mesh_obj = ObjectsFem.makeMeshGmsh(doc, "FEMMeshGmsh")
     mesh_obj.Shape = shape_obj
-    mesh_obj.CharacteristicLengthMax = "5 mm"
+    mesh_obj.CharacteristicLengthMax = "3 mm"   # Refined from 5 mm
     mesh_obj.CharacteristicLengthMin = "1 mm"
+    mesh_obj.ElementOrder = "2nd"               # Use C3D10 quadratic tets
     analysis.addObject(mesh_obj)
 
     doc.recompute()
@@ -209,17 +247,25 @@ if __name__ == "__main__":
     h   = float(cfg["h_mm"])
     r   = float(cfg["r_mm"])
     out = cfg["output"]
+    geom_type = cfg.get("geometry", "cantilever")
 
-    stem = f"h{h:.1f}_r{r:.1f}".replace(".", "p")
+    stem = f"{geom_type[:4]}_h{h:.1f}_r{r:.1f}".replace(".", "p")
     doc_name = f"FEM_{stem}"
 
-    print(f"[run_fem_variant] h_mm={h}  r_mm={r}  output={out}")
+    print(f"[run_fem_variant] h_mm={h}  r_mm={r}  geometry={geom_type}  output={out}")
 
     try:
         doc = App.newDocument(doc_name)
 
         import Part
-        shape = make_shape(h, r)
+        if geom_type == "lbracket":
+            shape = make_lbracket_shape(arm_h=h, thickness=r if r > 1 else 10.0)
+        elif geom_type == "tapered":
+            shape = make_tapered_beam_shape(h_start=h, h_end=max(4.0, h*0.4))
+        elif geom_type == "ribbed":
+            shape = make_ribbed_plate_shape(plate_h=h*0.4, rib_h=h)
+        else:  # cantilever (default)
+            shape = make_shape(h, r)
 
         feat = doc.addObject("Part::Feature", "CantileverBeam")
         feat.Shape = shape

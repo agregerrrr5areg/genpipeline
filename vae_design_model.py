@@ -91,6 +91,14 @@ class DesignVAE(nn.Module):
             nn.Linear(64, 3),
         )
 
+        self.parameter_head = nn.Sequential(
+            nn.Linear(latent_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 2), # h_mm, r_mm
+        )
+
     def encode(self, x):
         h = self.encoder(x)
         h = self.fc_encode(h)
@@ -120,12 +128,16 @@ class DesignVAE(nn.Module):
     def predict_performance(self, z):
         return self.performance_head(z)
 
+    def predict_parameters(self, z):
+        return self.parameter_head(z)
+
     def forward(self, x):
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
         x_recon = self.decode(z)
         perf_pred = self.predict_performance(z)
-        return x_recon, mu, logvar, z, perf_pred
+        params_pred = self.predict_parameters(z)
+        return x_recon, mu, logvar, z, perf_pred, params_pred
 
 
 class VAELoss(nn.Module):
@@ -136,20 +148,25 @@ class VAELoss(nn.Module):
         self.mse_loss = nn.MSELoss(reduction='mean')
         self.perf_loss = nn.MSELoss(reduction='mean')
 
-    def forward(self, x_recon, x_true, mu, logvar, perf_pred, perf_true, kl_weight=1.0):
+    def forward(self, x_recon, x_true, mu, logvar,
+                perf_pred, perf_true,
+                params_pred, params_true,
+                kl_weight=1.0):
         recon_loss = self.mse_loss(x_recon, x_true)
 
         kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
 
         perf_loss = self.perf_loss(perf_pred, perf_true)
+        param_loss = self.mse_loss(params_pred, params_true)
 
         total_loss = (
             self.recon_weight * recon_loss +
             self.beta * kl_weight * kl_loss +
-            0.1 * perf_loss
+            0.1 * perf_loss +
+            0.1 * param_loss
         )
 
-        return total_loss, recon_loss, kl_loss, perf_loss
+        return total_loss, recon_loss, kl_loss, perf_loss, param_loss
 
 
 class VAETrainer:
@@ -173,13 +190,16 @@ class VAETrainer:
         for batch_idx, batch in enumerate(self.train_loader):
             geometry = batch['geometry'].to(self.device)
             perf_true = batch['performance'].to(self.device)
+            params_true = batch['parameters'].to(self.device)
 
             self.optimizer.zero_grad()
 
-            x_recon, mu, logvar, z, perf_pred = self.model(geometry)
+            x_recon, mu, logvar, z, perf_pred, params_pred = self.model(geometry)
 
-            loss, recon_loss, kl_loss, perf_loss = self.criterion(
-                x_recon, geometry, mu, logvar, perf_pred, perf_true,
+            loss, recon_loss, kl_loss, perf_loss, param_loss = self.criterion(
+                x_recon, geometry, mu, logvar,
+                perf_pred, perf_true,
+                params_pred, params_true,
                 kl_weight=kl_weight
             )
 
@@ -214,11 +234,14 @@ class VAETrainer:
             for batch in self.val_loader:
                 geometry = batch['geometry'].to(self.device)
                 perf_true = batch['performance'].to(self.device)
+                params_true = batch['parameters'].to(self.device)
 
-                x_recon, mu, logvar, z, perf_pred = self.model(geometry)
+                x_recon, mu, logvar, z, perf_pred, params_pred = self.model(geometry)
 
-                loss, recon_loss, kl_loss, perf_loss = self.criterion(
-                    x_recon, geometry, mu, logvar, perf_pred, perf_true
+                loss, recon_loss, kl_loss, perf_loss, param_loss = self.criterion(
+                    x_recon, geometry, mu, logvar,
+                    perf_pred, perf_true,
+                    params_pred, params_true
                 )
 
                 total_loss += loss.item()

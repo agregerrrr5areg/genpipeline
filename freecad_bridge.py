@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import concurrent.futures
 import json
 import logging
 import shutil
@@ -236,33 +237,34 @@ def build_dataset(output_dir: Path, voxel_resolution: int = 32):
 VARIANT_SCRIPT = Path(__file__).parent / "freecad_scripts" / "run_fem_variant.py"
 
 
+def deploy_variant_script() -> str:
+    """Copy the variant script to Windows Temp so FreeCAD can access it."""
+    dst = WIN_TEMP_WSL / "run_fem_variant.py"
+    shutil.copy(VARIANT_SCRIPT, dst)
+    logger.info(f"Variant script deployed to {dst}")
+    return WIN_TEMP_WIN + "\\run_fem_variant.py"
+
+
 def run_variant(freecad_cmd: str, h_mm: float, r_mm: float,
-                output_wsl: str) -> dict | None:
+                output_wsl: str, variant_win: str, geometry: str = "cantilever") -> dict | None:
     """Run one FEM variant (h_mm, r_mm) via FreeCADCmd. Returns parsed JSON or None."""
     output_win  = wsl_to_windows(output_wsl)
 
-    # Copy variant script to Windows Temp so FreeCAD can access it via a plain Windows path.
-    # UNC paths (\\wsl.localhost\...) are not executed by FreeCAD.
-    variant_tmp_wsl = WIN_TEMP_WSL / "run_fem_variant.py"
-    shutil.copy(VARIANT_SCRIPT, variant_tmp_wsl)
-    variant_win = WIN_TEMP_WIN + "\\run_fem_variant.py"
-
     # FreeCAD 1.0 intercepts --flag style args; pass params via a config file.
-    stem       = f"h{h_mm:.1f}_r{r_mm:.1f}".replace(".", "p")
+    stem       = f"{geometry[:4]}_h{h_mm:.1f}_r{r_mm:.1f}".replace(".", "p")
     cfg_wsl    = WIN_TEMP_WSL / f"fem_cfg_{stem}.cfg"
     cfg_win    = WIN_TEMP_WIN + f"\\fem_cfg_{stem}.cfg"
     with open(cfg_wsl, "w") as f:
-        json.dump({"h_mm": h_mm, "r_mm": r_mm, "output": output_win}, f)
+        json.dump({"h_mm": h_mm, "r_mm": r_mm, "output": output_win, "geometry": geometry}, f)
 
     # FreeCAD 1.0 (freecad.exe) needs --console for headless; 0.x FreeCADCmd.exe doesn't
     console_flag = ["--console"] if freecad_cmd.endswith("freecad.exe") else []
     cmd = [freecad_cmd] + console_flag + [variant_win, cfg_win]
 
-    logger.info(f"  h={h_mm:.1f} r={r_mm:.1f}")
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     except subprocess.TimeoutExpired:
-        logger.error("FreeCAD timed out")
+        logger.error(f"FreeCAD timed out for {stem}")
         return None
 
     for line in proc.stdout.splitlines():
@@ -272,7 +274,7 @@ def run_variant(freecad_cmd: str, h_mm: float, r_mm: float,
         logger.error(f"FreeCAD exited {proc.returncode}:\n{proc.stderr[-500:]}")
         return None
 
-    stem = f"h{h_mm:.1f}_r{r_mm:.1f}".replace(".", "p")
+    stem = f"{geometry[:4]}_h{h_mm:.1f}_r{r_mm:.1f}".replace(".", "p")
     json_path = Path(output_wsl) / f"{stem}_fem_results.json"
     if not json_path.exists():
         logger.warning(f"No JSON at {json_path}")
@@ -287,7 +289,9 @@ def generate_variants(freecad_cmd: str, output_dir: Path,
                       h_range: tuple = (5.0, 20.0),
                       r_range: tuple = (0.0,  8.0),
                       voxel_resolution: int = 32,
-                      seed: int = 42):
+                      seed: int = 42,
+                      n_workers: int = 4,
+                      geometry_types: list = None):
     """
     Generate n FEM variants by sampling (h_mm, r_mm) uniformly at random.
 
@@ -299,22 +303,49 @@ def generate_variants(freecad_cmd: str, output_dir: Path,
         r_range:          (min, max) hole radius in mm (0 = solid)
         voxel_resolution: voxel grid size passed to build_dataset()
         seed:             RNG seed for reproducibility
+        n_workers:        number of parallel processes
+        geometry_types:   list of geometry types to cycle through
     """
     import random
     random.seed(seed)
+    if geometry_types is None:
+        geometry_types = ["cantilever"]
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    ok, fail = 0, 0
+    # Pre-generate parameters to ensure reproducibility
+    tasks = []
     for i in range(n):
         h = round(random.uniform(*h_range), 2)
         r = round(random.uniform(*r_range), 2)
-        logger.info(f"[{i+1}/{n}] variant h={h} r={r}")
-        result = run_variant(freecad_cmd, h, r, str(output_dir))
-        if result:
-            ok += 1
-        else:
-            fail += 1
+        geom = geometry_types[i % len(geometry_types)]
+        tasks.append((h, r, geom))
+
+    ok, fail = 0, 0
+    logger.info(f"Starting generation of {n} variants with {n_workers} workers...")
+    variant_win = deploy_variant_script()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as executor:
+        # map run_variant across tasks
+        future_to_params = {
+            executor.submit(run_variant, freecad_cmd, h, r, str(output_dir), variant_win, geom): (h, r, geom)
+            for h, r, geom in tasks
+        }
+
+        for i, future in enumerate(concurrent.futures.as_completed(future_to_params)):
+            h, r, geom = future_to_params[future]
+            try:
+                result = future.result()
+                if result:
+                    ok += 1
+                else:
+                    fail += 1
+            except Exception as e:
+                logger.error(f"Task {geom} h={h} r={r} raised exception: {e}")
+                fail += 1
+
+            if (i + 1) % 5 == 0 or (i + 1) == n:
+                logger.info(f"Progress: {i+1}/{n} completed ({ok} ok, {fail} fail)")
 
     logger.info(f"Generation: {ok} succeeded, {fail} failed")
     train_loader, val_loader = build_dataset(output_dir, voxel_resolution)
@@ -355,6 +386,19 @@ def main():
     gen_p.add_argument("--freecad-path",     default=None)
     gen_p.add_argument("--voxel-resolution", type=int, default=32)
     gen_p.add_argument("--seed",             type=int, default=42)
+    gen_p.add_argument("--n-workers",        type=int, default=4, help="Number of parallel FreeCAD processes")
+    gen_p.add_argument("--geometry-types", nargs="+",
+                       default=["cantilever"],
+                       choices=["cantilever", "lbracket", "tapered", "ribbed"],
+                       help="Geometry types to cycle through")
+
+    # ── run: single variant ──────────────────────────────────────────────
+    run_p = subparsers.add_parser("run", help="Run a single FEM variant")
+    run_p.add_argument("--h-mm", type=float, required=True)
+    run_p.add_argument("--r-mm", type=float, required=True)
+    run_p.add_argument("--geometry", default="cantilever")
+    run_p.add_argument("--output-dir", default="./fem_data")
+    run_p.add_argument("--freecad-path", default=None)
 
     # Backwards-compat: no subcommand → treat as extract (requires --designs-dir)
     parser.add_argument("--designs-dir",     default=None)
@@ -384,7 +428,26 @@ def main():
             r_range      = (args.r_min, args.r_max),
             voxel_resolution = args.voxel_resolution,
             seed         = args.seed,
+            n_workers    = args.n_workers,
+            geometry_types = args.geometry_types,
         )
+        return
+
+    # ── run subcommand ──────────────────────────────────────────────────
+    if args.command == "run":
+        variant_win = deploy_variant_script()
+        result = run_variant(
+            freecad_cmd,
+            args.h_mm,
+            args.r_mm,
+            str(output_dir),
+            variant_win,
+            geometry=args.geometry
+        )
+        if result:
+            logger.info(f"Success: {result}")
+        else:
+            logger.error("Failed to run variant")
         return
 
     # ── extract subcommand (or legacy positional mode) ────────────────────

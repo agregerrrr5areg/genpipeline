@@ -212,13 +212,18 @@ class FEMDataset(Dataset):
             float(sample.mass)
         ], dtype=torch.float32)
 
+        params = torch.tensor([
+            float(sample.parameters.get("h_mm", 10.0)),
+            float(sample.parameters.get("r_mm", 3.0))
+        ], dtype=torch.float32)
+
         return {
             'geometry': voxel_tensor.unsqueeze(0),
             'stress_max': torch.tensor(sample.stress_max, dtype=torch.float32),
             'compliance': torch.tensor(sample.compliance, dtype=torch.float32),
             'mass': torch.tensor(sample.mass, dtype=torch.float32),
             'performance': performance,
-            'parameters': sample.parameters
+            'parameters': params
         }
 
 

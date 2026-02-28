@@ -78,7 +78,54 @@ def make_cylinder(res, radius_frac=None, height_frac=None):
     grid[:, :, z0:z0+h] = circle[:, :, None]
     return grid
 
-SHAPE_GENERATORS = [make_sphere, make_box, make_cylinder]
+def make_lbracket(res, arm_frac=None, thickness_frac=None):
+    """L-shaped bracket: two perpendicular arms."""
+    if arm_frac is None:
+        arm_frac = np.random.uniform(0.5, 0.8)
+    if thickness_frac is None:
+        thickness_frac = np.random.uniform(0.15, 0.3)
+    grid = np.zeros((res, res, res), dtype=np.float32)
+    arm = int(res * arm_frac)
+    t   = int(res * thickness_frac)
+    # horizontal arm along X
+    grid[:arm, :t, :t] = 1.0
+    # vertical arm along Z
+    grid[:t, :t, :arm] = 1.0
+    return grid
+
+def make_tapered_beam(res, taper_frac=None):
+    """Beam that narrows linearly from thick end to thin end along X."""
+    if taper_frac is None:
+        taper_frac = np.random.uniform(0.3, 0.7)  # ratio thin/thick
+    grid = np.zeros((res, res, res), dtype=np.float32)
+    thick = int(res * 0.6)
+    thin  = max(2, int(thick * taper_frac))
+    for xi in range(res):
+        w = int(thick - (thick - thin) * xi / (res - 1))
+        start = (res - w) // 2
+        grid[xi, start:start+w, start:start+w] = 1.0
+    return grid
+
+def make_ribbed_plate(res, n_ribs=None):
+    """Flat plate with evenly spaced ribs on top."""
+    if n_ribs is None:
+        n_ribs = np.random.randint(2, 5)
+    grid = np.zeros((res, res, res), dtype=np.float32)
+    plate_h = max(2, res // 6)
+    rib_h   = max(2, res // 4)
+    rib_w   = max(1, res // 8)
+    # base plate
+    grid[:, :, :plate_h] = 1.0
+    # ribs
+    spacing = res // (n_ribs + 1)
+    for k in range(n_ribs):
+        cx = spacing * (k + 1)
+        x0 = max(0, cx - rib_w // 2)
+        x1 = min(res, cx + rib_w // 2)
+        grid[x0:x1, :, plate_h:plate_h+rib_h] = 1.0
+    return grid
+
+SHAPE_GENERATORS = [make_sphere, make_box, make_cylinder, make_lbracket, make_tapered_beam, make_ribbed_plate]
 
 def synthetic_fem_metrics(voxel):
     """Fake but physically-ish correlated FEM metrics from voxel statistics."""
