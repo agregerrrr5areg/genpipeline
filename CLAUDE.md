@@ -18,6 +18,18 @@ A generative design pipeline combining FreeCAD's **FEMbyGEN** addon (parametric 
 > ```
 
 
+## CUDA Kernel Compilation
+
+Custom CUDA kernels live in `cuda_kernels/`. They require CUDA 12.8 nvcc (not the system 11.8).
+
+```bash
+# Compile and benchmark GPU voxelisation kernel
+source venv/bin/activate
+CUDA_HOME=/usr/local/cuda-12.8 PATH=/usr/local/cuda-12.8/bin:$PATH python cuda_kernels/benchmark.py
+```
+
+The kernel JIT-compiles on first use and is cached automatically. Results: **27–2890× faster** than CPU trimesh voxelisation.
+
 The venv is already configured. Activate with:
 ```bash
 source venv/bin/activate
