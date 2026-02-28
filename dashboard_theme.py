@@ -18,22 +18,29 @@ div[data-testid="stVerticalBlock"] {{ background-color: transparent; }}
 section[data-testid="stSidebar"] {{ background-color: {PANEL}; }}
 
 /* Buttons — plain text, no box */
-.stButton button {{
-    background: none !important;
+.stButton > button,
+.stButton > button:active,
+.stButton > button:visited {{
+    background: transparent !important;
+    background-color: transparent !important;
     border: none !important;
+    border-radius: 0 !important;
     box-shadow: none !important;
     color: {MUTED} !important;
-    font-size: 0.85rem;
-    padding: 2px 6px;
-    text-align: left;
+    font-size: 0.82rem;
+    font-weight: 400 !important;
+    padding: 2px 4px !important;
+    text-align: left !important;
+    letter-spacing: 0.02em;
 }}
-.stButton button:hover {{
-    color: {TEXT} !important;
-    background: none !important;
-}}
-.stButton button:focus {{
+.stButton > button:hover,
+.stButton > button:focus,
+.stButton > button:focus:not(:active) {{
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
     box-shadow: none !important;
-    outline: none !important;
+    color: {TEXT} !important;
 }}
 
 /* Download button — keep minimal */

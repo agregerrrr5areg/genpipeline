@@ -93,20 +93,32 @@ def render_viewport():
     elif variants and Path(variants[0]["_stl"]).exists():
         stl_path = variants[0]["_stl"]
 
-    fig   = go.Figure()
-    title = ""
+    fig          = go.Figure()
+    title        = ""
+    scene_aspect = dict(x=1, y=0.2, z=0.15)
 
     if stl_path:
         try:
             x, y, z, i, j, k = load_stl_for_plotly(stl_path)
+            # Colour each vertex by Z-height so the 3D shape reads clearly
             fig.add_trace(go.Mesh3d(
                 x=x, y=y, z=z, i=i, j=j, k=k,
-                color="#cccccc", opacity=1.0,
+                intensity=z,
+                colorscale=[[0, "#333333"], [0.5, "#aaaaaa"], [1, "#ffffff"]],
+                showscale=False,
                 flatshading=True,
-                lighting=dict(ambient=0.5, diffuse=0.8, specular=0.1, roughness=0.8),
-                lightposition=dict(x=1, y=2, z=3),
+                lighting=dict(ambient=0.4, diffuse=0.9, specular=0.2, roughness=0.6),
+                lightposition=dict(x=100, y=200, z=300),
             ))
-            title = Path(stl_path).stem
+            # Parse h_mm from filename to set correct axis proportions
+            stem = Path(stl_path).stem  # e.g. h14p6_r0p2_mesh
+            try:
+                h_mm = float(stem.split("_")[0][1:].replace("p", "."))
+            except Exception:
+                h_mm = 15.0
+            title = f"{stem.replace('_mesh', '')}   L=100 W=20 H={h_mm:.0f} mm"
+            # Lock scene to true mm aspect ratio: L=100 W=20 H=h_mm
+            scene_aspect = dict(x=100/100, y=20/100, z=h_mm/100)
         except Exception as e:
             st.error(f"STL error: {e}")
             return
@@ -115,18 +127,27 @@ def render_viewport():
         fig.add_trace(go.Isosurface(
             x=d["x"], y=d["y"], z=d["z"], value=d["value"],
             isomin=0.5, isomax=1.0, surface_count=1,
-            colorscale=[[0, ACCENT], [1, "#ff9999"]],
+            colorscale=[[0, "#444"], [1, "#ffffff"]],
             showscale=False,
             caps=dict(x_show=False, y_show=False, z_show=False),
         ))
-        title = f"BO iter {best.step}  obj={best.objective:.4f}"
+        title = f"BO iter {best.step}   obj={best.objective:.4f}"
+        scene_aspect = dict(x=1, y=0.2, z=0.15)
     else:
         fig.add_annotation(text="Select a design from the browser",
                            xref="paper", yref="paper", x=0.5, y=0.5,
                            showarrow=False, font=dict(color=MUTED, size=14))
+        scene_aspect = dict(x=1, y=0.2, z=0.15)
 
-    fig.update_layout(**PLOTLY_LAYOUT, height=430,
-                      title=dict(text=title, font=dict(color=MUTED, size=12)))
+    layout = dict(**PLOTLY_LAYOUT)
+    layout["scene"] = dict(
+        **PLOTLY_LAYOUT["scene"],
+        aspectmode="manual",
+        aspectratio=scene_aspect,
+    )
+    layout.update(height=430, title=dict(text=title if stl_path or voxel_data else "",
+                                         font=dict(color=MUTED, size=11)))
+    fig.update_layout(**layout)
     st.plotly_chart(fig, width="stretch", key="viewport_chart")
 
 
