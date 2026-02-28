@@ -54,11 +54,20 @@ class BridgeEvaluator:
         )
 
         if result:
+            stress = float(result.get("stress_max", 0.0))
+            compliance = float(result.get("compliance", 0.0))
+            
+            # If stress is 0, the simulation likely failed to produce results
+            if stress < 1e-6 or compliance < 1e-9:
+                logger.warning(f"Simulation returned null results for {geom}. Applying penalty.")
+                return {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
+
             # Map result keys to the expected internal format
             eval_res = {
-                "stress": float(result.get("stress_max", 1e6)),
-                "compliance": float(result.get("compliance", 1e6)),
-                "mass": float(result.get("mass", 1.0))
+                "stress": stress,
+                "compliance": compliance,
+                "mass": float(result.get("mass", 1.0)),
+                "bbox": result.get("bbox")
             }
             self.evaluation_history.append({
                 "parameters": parameters,
@@ -111,6 +120,7 @@ class DesignOptimizer:
 
         self.x_history = []
         self.y_history = []
+        self.best_bbox = None
 
     def decode_latent_to_geometry(self, z: np.ndarray) -> np.ndarray:
         with torch.no_grad():
@@ -120,26 +130,18 @@ class DesignOptimizer:
             geometry = self.vae.decode(z_tensor)
         return geometry.cpu().numpy()
 
-    def decode_to_mesh(self, z: np.ndarray):
+    def decode_to_mesh(self, z: np.ndarray, bbox: dict = None):
         """Decode latent z → voxels → triangle mesh.
         Tries GPU kernel first, falls back to skimage.
         """
+        from utils import VoxelConverter
         voxels = self.decode_latent_to_geometry(z).squeeze()  # (D, H, W)
         
-        try:
-            from cuda_kernels import gpu_marching_cubes
-            verts, faces = gpu_marching_cubes(voxels, isovalue=0.5)
-            return verts, faces
-        except Exception as e:
-            logger.debug(f"GPU marching cubes failed ({e}), using skimage fallback")
-            from skimage import measure
-            try:
-                # skimage returns (verts, faces, normals, values)
-                verts, faces, _, _ = measure.marching_cubes(voxels, level=0.5)
-                return verts, faces
-            except Exception as e2:
-                logger.error(f"All marching cubes implementations failed: {e2}")
-                return np.array([]), np.array([])
+        # Use VoxelConverter which now supports scale preservation via bbox
+        mesh_data = VoxelConverter.voxel_to_mesh(voxels, bbox=bbox)
+        if mesh_data:
+            return mesh_data['vertices'], mesh_data['faces']
+        return np.array([]), np.array([])
 
     def geometry_to_parameters(self, z: np.ndarray) -> Dict[str, float]:
         with torch.no_grad():
@@ -154,7 +156,7 @@ class DesignOptimizer:
             "geometry": self.sim_cfg.get("geometry_type", "cantilever")
         }
 
-    def objective_function(self, z: np.ndarray, real_eval=False) -> float:
+    def objective_function(self, z: np.ndarray, real_eval=False) -> Tuple[float, dict | None]:
         z = z.reshape(1, -1) if z.ndim == 1 else z
         cfg   = self.sim_cfg
         w_s   = cfg.get("w_stress", 1.0)
@@ -169,9 +171,11 @@ class DesignOptimizer:
             stress     = results["stress"]
             compliance = results["compliance"]
             mass       = results.get("mass", 0.0)
+            bbox       = results.get("bbox")
             penalty    = 1e6 if stress > max_s else 0.0
 
-            return w_s * stress + w_c * compliance + w_m * mass + penalty
+            val = w_s * stress + w_c * compliance + w_m * mass + penalty
+            return val, bbox
 
         else:
             perf_pred       = self.predictor.predict(z)
@@ -179,7 +183,8 @@ class DesignOptimizer:
             compliance_pred = float(perf_pred[0, 1])
             penalty         = 1e6 if stress_pred > max_s else 0.0
 
-            return w_s * stress_pred + w_c * compliance_pred + penalty
+            val = w_s * stress_pred + w_c * compliance_pred + penalty
+            return val, None
 
     def initialize_search(self, n_init_points=5):
         logger.info(f"Initializing Bayesian optimization with {n_init_points} points...")
@@ -189,10 +194,13 @@ class DesignOptimizer:
 
             z = np.clip(z, -3, 3)
 
-            obj_value = self.objective_function(z[0], real_eval=True)
+            obj_value, bbox = self.objective_function(z[0], real_eval=True)
 
             self.x_history.append(z[0])
             self.y_history.append(obj_value)
+            
+            if obj_value == min(self.y_history):
+                self.best_bbox = bbox
 
             logger.info(f"Init point {i+1}: z_norm={np.linalg.norm(z):.3f}, obj={obj_value:.4f}")
 
@@ -229,14 +237,15 @@ class DesignOptimizer:
         logger.info(f"Candidate z_norm: {np.linalg.norm(best_candidate):.3f}")
 
         params = self.geometry_to_parameters(best_candidate)
-        results = self.fem_evaluator.evaluate(params)
-        obj_value = results["stress"] + 0.1 * results["compliance"]
+        obj_value, bbox = self.objective_function(best_candidate, real_eval=True)
 
         self.x_history.append(best_candidate)
         self.y_history.append(obj_value)
+        
+        if obj_value == min(self.y_history):
+            self.best_bbox = bbox
 
-        logger.info(f"New point: obj={obj_value:.4f}, stress={results['stress']:.2f}, "
-                   f"compliance={results['compliance']:.4f}")
+        logger.info(f"New point: obj={obj_value:.4f}")
 
         self.train_x = torch.from_numpy(np.array(self.x_history)).double().to(botorch_device)
         self.train_y = torch.from_numpy(np.array(self.y_history)).double().to(botorch_device).unsqueeze(-1)
@@ -245,7 +254,7 @@ class DesignOptimizer:
         mll = ExactMarginalLogLikelihood(self.gp_model.likelihood, self.gp_model)
         fit_gpytorch_mll(mll)
 
-        return best_candidate, results
+        return best_candidate, obj_value
 
     def _random_search_step(self, n_candidates=20):
         best_obj = float('inf')
@@ -256,19 +265,17 @@ class DesignOptimizer:
             z = np.random.randn(self.latent_dim) * 0.5
             z = np.clip(z, -3, 3)
 
-            params = self.geometry_to_parameters(z)
-            results = self.fem_evaluator.evaluate(params)
-            obj_value = results["stress"] + 0.1 * results["compliance"]
+            obj_value, bbox = self.objective_function(z, real_eval=True)
 
             if obj_value < best_obj:
                 best_obj = obj_value
                 best_z = z
-                best_results = results
+                self.best_bbox = bbox
 
         self.x_history.append(best_z)
         self.y_history.append(best_obj)
 
-        return best_z, best_results
+        return best_z, best_obj
 
     def run_optimization(self, n_iterations=50):
         logger.info(f"Starting optimization for {n_iterations} iterations...")
@@ -281,7 +288,7 @@ class DesignOptimizer:
         for iteration in range(n_iterations):
             logger.info(f"\n=== Iteration {iteration + 1}/{n_iterations} ===")
 
-            z_candidate, results = self.optimize_step()
+            z_candidate, obj_candidate = self.optimize_step()
 
             current_best_obj = min(self.y_history)
             if current_best_obj < best_obj:
@@ -306,6 +313,7 @@ class DesignOptimizer:
             "y_history": [float(y) for y in self.y_history],
             "best_x": best_z.tolist(),
             "best_y": float(min(self.y_history)),
+            "best_bbox": self.best_bbox
         }
 
         with open(Path(output_dir) / "optimization_history.json", 'w') as f:
@@ -317,7 +325,7 @@ class DesignOptimizer:
         # Export best design as STL via GPU Marching Cubes
         try:
             import trimesh
-            verts, faces = self.decode_to_mesh(best_z)
+            verts, faces = self.decode_to_mesh(best_z, bbox=self.best_bbox)
             if len(faces) > 0:
                 mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
                 stl_path = Path(output_dir) / "best_design.stl"

@@ -266,15 +266,33 @@ def step_5_export_design(config: PipelineConfig, best_z):
 
     voxel_grid = geometry.squeeze().cpu().numpy()
 
+    # Precision check: if the voxel grid is all zeros, Marching Cubes will fail.
+    # This can happen if the BO finds a "void" design that it thinks has 0 mass.
+    if np.max(voxel_grid) < 0.1:
+        logger.error("Best design is empty (all zeros). Skipping export.")
+        return False
+
     mfg_constraints = ManufacturabilityConstraints()
     voxel_grid = mfg_constraints.apply_constraints(voxel_grid)
 
     output_dir = Path(config['output_dir']) / 'exported_designs'
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load best_bbox if available for scale preservation
+    best_bbox = None
+    hist_path = Path(config['output_dir']) / "optimization_history.json"
+    if hist_path.exists():
+        try:
+            with open(hist_path, 'r') as f:
+                hist = json.load(f)
+                best_bbox = hist.get("best_bbox")
+        except Exception as e:
+            logger.warning(f"Could not load best_bbox from history: {e}")
+
     mesh_data = VoxelConverter.voxel_to_mesh(
         voxel_grid,
-        voxel_size=1.0 / config['voxel_resolution']
+        voxel_size=1.0 / config['voxel_resolution'],
+        bbox=best_bbox
     )
 
     if mesh_data:

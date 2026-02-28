@@ -20,7 +20,8 @@ class DesignSample:
     compliance: float
     mass: float
     parameters: dict
-    voxel_grid: np.ndarray
+    voxel_grid: np.ndarray  # Stored as float32 in sample, converted to uint8 in Dataset
+    bbox: dict = None       # xmin, ymin, zmin, xmax, ymax, zmax
 
 
 class VoxelGrid:
@@ -179,6 +180,11 @@ class FEMDataset(Dataset):
         self.voxelizer = VoxelGrid(resolution=voxel_resolution)
         self.use_sdf = use_sdf
 
+        # Precision Optimization: Convert voxel grids to uint8 (FP8 storage simulation)
+        for s in self.samples:
+            if s.voxel_grid is not None and s.voxel_grid.dtype != np.uint8:
+                s.voxel_grid = (s.voxel_grid * 255).astype(np.uint8)
+
         self.stress_max_vals = np.array([s.stress_max for s in samples])
         self.compliance_vals = np.array([s.compliance for s in samples])
 
@@ -198,10 +204,13 @@ class FEMDataset(Dataset):
                 voxel = self.voxelizer.sdf_to_voxel(sample.geometry_path)
             else:
                 voxel = self.voxelizer.mesh_to_voxel(sample.geometry_path)
+            # Store as uint8 for memory efficiency
+            voxel_uint8 = (voxel * 255).astype(np.uint8)
         else:
-            voxel = sample.voxel_grid
+            voxel_uint8 = sample.voxel_grid
 
-        voxel_tensor = torch.from_numpy(voxel).float()
+        # Re-scale to FP32 for training
+        voxel_tensor = torch.from_numpy(voxel_uint8).float() / 255.0
 
         stress_normalized = (sample.stress_max - self.stress_max_mean) / self.stress_max_std
         compliance_normalized = (sample.compliance - self.compliance_mean) / self.compliance_std
@@ -217,13 +226,23 @@ class FEMDataset(Dataset):
             float(sample.parameters.get("r_mm", 3.0))
         ], dtype=torch.float32)
 
+        # Scale Preservation: Extract bounding box
+        if sample.bbox:
+            bbox_tensor = torch.tensor([
+                sample.bbox['xmin'], sample.bbox['ymin'], sample.bbox['zmin'],
+                sample.bbox['xmax'], sample.bbox['ymax'], sample.bbox['zmax']
+            ], dtype=torch.float32)
+        else:
+            bbox_tensor = torch.zeros(6, dtype=torch.float32)
+
         return {
             'geometry': voxel_tensor.unsqueeze(0),
             'stress_max': torch.tensor(sample.stress_max, dtype=torch.float32),
             'compliance': torch.tensor(sample.compliance, dtype=torch.float32),
             'mass': torch.tensor(sample.mass, dtype=torch.float32),
             'performance': performance,
-            'parameters': params
+            'parameters': params,
+            'bbox': bbox_tensor
         }
 
 
@@ -263,7 +282,8 @@ class DataPipeline:
                         compliance=metrics.get("compliance", 0.0),
                         mass=metrics.get("mass", 0.0),
                         parameters=metrics.get("parameters", {}),
-                        voxel_grid=voxel
+                        voxel_grid=voxel,
+                        bbox=metrics.get("bbox")
                     )
                     samples.append(sample)
 

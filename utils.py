@@ -25,15 +25,34 @@ def convert_windows_path_to_wsl(windows_path: str) -> str:
 
 class VoxelConverter:
     @staticmethod
-    def voxel_to_mesh(voxel_grid: np.ndarray, voxel_size: float = 1.0) -> dict:
+    def voxel_to_mesh(voxel_grid: np.ndarray, voxel_size: float = 1.0, bbox: dict = None) -> dict:
         from skimage import measure
 
+        # Scale Preservation: use real-world spacing if bbox is available
+        spacing = (voxel_size, voxel_size, voxel_size)
+        origin  = np.array([0.0, 0.0, 0.0])
+
+        if bbox:
+            res = voxel_grid.shape[0]
+            dx = (bbox['xmax'] - bbox['xmin']) / res
+            dy = (bbox['ymax'] - bbox['ymin']) / res
+            dz = (bbox['zmax'] - bbox['zmin']) / res
+            spacing = (dx, dy, dz)
+            origin  = np.array([bbox['xmin'], bbox['ymin'], bbox['zmin']])
+
         try:
+            # Ensure voxel_grid is float for marching cubes
+            v_float = voxel_grid.astype(np.float32)
+            
             verts, faces, normals, _ = measure.marching_cubes(
-                voxel_grid,
+                v_float,
                 level=0.5,
-                spacing=(voxel_size, voxel_size, voxel_size)
+                spacing=spacing
             )
+            
+            # Shift back to real-world origin
+            verts += origin
+
             return {
                 'vertices': verts,
                 'faces': faces,

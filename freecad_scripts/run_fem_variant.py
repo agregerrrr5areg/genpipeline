@@ -128,22 +128,29 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
     # ── Analysis container ────────────────────────────────────────────────
     analysis = ObjectsFem.makeAnalysis(doc, "FemAnalysis")
 
-    # ── Material: structural steel ────────────────────────────────────────
+    # ── Material definition ───────────────────────────────────────────────
     mat = ObjectsFem.makeMaterialSolid(doc, "FemMaterialSolid")
+    e_mpa = cfg.get('E_mpa', 210000)
     mat.Material = {
-        "Name":          "CalculiX-Steel",
-        "YoungsModulus": f"{cfg.get('E_mpa', 210000)} MPa",
+        "Name":          "CalculiX-Custom",
+        "YoungsModulus": f"{e_mpa} MPa",
         "PoissonRatio":  str(cfg.get('poisson', 0.30)),
         "Density":       f"{cfg.get('density_kg_m3', 7900)} kg/m^3",
+        "ThermalConductivity": f"{cfg.get('thermal_conductivity', 50.0)} W/m/K",
+        "SpecificHeat":  f"{cfg.get('specific_heat', 490.0)} J/kg/K",
+        "ThermalExpansionCoefficient": str(cfg.get('thermal_expansion', 1.2e-5)),
     }
     analysis.addObject(mat)
 
-    # ── Mesh (Gmsh) ───────────────────────────────────────────────────────
+    # ── Mesh (Adaptive Refinement for Accuracy) ───────────────────────────
+    # If material is flexible (E < 10GPa), use finer mesh for deformation accuracy
+    base_length = 3.0 if e_mpa > 10000 else 1.5
+    
     mesh_obj = ObjectsFem.makeMeshGmsh(doc, "FEMMeshGmsh")
     mesh_obj.Shape = shape_obj
-    mesh_obj.CharacteristicLengthMax = "3 mm"   # Refined from 5 mm
-    mesh_obj.CharacteristicLengthMin = "1 mm"
-    mesh_obj.ElementOrder = "2nd"               # Use C3D10 quadratic tets
+    mesh_obj.CharacteristicLengthMax = f"{base_length} mm"
+    mesh_obj.CharacteristicLengthMin = "0.5 mm"
+    mesh_obj.ElementOrder = "2nd"               # C3D10
     analysis.addObject(mesh_obj)
 
     doc.recompute()

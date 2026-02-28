@@ -1,0 +1,42 @@
+{
+  "Steel": {
+    "E_mpa": 210000,
+    "poisson": 0.3,
+    "density_kg_m3": 7900,
+    "yield_mpa": 250,
+    "tensile_mpa": 400,
+    "thermal_conductivity_w_mk": 50.0,
+    "specific_heat_j_kgk": 490.0,
+    "thermal_expansion_coeff": 1.2e-5
+  },
+  "Aluminium": {
+    "E_mpa": 70000,
+    "poisson": 0.33,
+    "density_kg_m3": 2700,
+    "yield_mpa": 270,
+    "tensile_mpa": 310,
+    "thermal_conductivity_w_mk": 237.0,
+    "specific_heat_j_kgk": 897.0,
+    "thermal_expansion_coeff": 2.3e-5
+  },
+  "Titanium_6Al4V": {
+    "E_mpa": 114000,
+    "poisson": 0.34,
+    "density_kg_m3": 4430,
+    "yield_mpa": 880,
+    "tensile_mpa": 950,
+    "thermal_conductivity_w_mk": 6.7,
+    "specific_heat_j_kgk": 523.0,
+    "thermal_expansion_coeff": 8.6e-6
+  },
+  "Plastic_ABS": {
+    "E_mpa": 2300,
+    "poisson": 0.35,
+    "density_kg_m3": 1040,
+    "yield_mpa": 40,
+    "tensile_mpa": 45,
+    "thermal_conductivity_w_mk": 0.17,
+    "specific_heat_j_kgk": 1400.0,
+    "thermal_expansion_coeff": 9.0e-5
+  }
+}
