@@ -42,7 +42,7 @@ class TopologySolver:
         output_dir : directory to write STL
         volfrac    : target volume fraction (0–1)
         """
-        from topology_solver.mesh_export import density_to_stl
+        from topology.mesh_export import density_to_stl
 
         t0 = time.time()
         if self._openlsto:
@@ -61,7 +61,7 @@ class TopologySolver:
         return out
 
     def _run_simp(self, sim_cfg: dict, volfrac: float) -> np.ndarray:
-        from topology_solver.simp_solver import SIMPSolver
+        from topology.simp_solver import SIMPSolver
         s = SIMPSolver(nx=self.nx, ny=self.ny, nz=self.nz)
         return s.run(volfrac=volfrac, n_iters=self.n_iters,
                      force_mag=float(sim_cfg.get("force_n", 1000)))

@@ -1,7 +1,7 @@
 import numpy as np
 from pathlib import Path
 import pytest
-from topology_solver.mesh_export import density_to_stl
+from topology.mesh_export import density_to_stl
 
 def test_density_to_stl_creates_file(tmp_path):
     vox = np.zeros((16, 8, 8))

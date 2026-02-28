@@ -1,5 +1,5 @@
 import numpy as np
-from topology_solver.simp_solver import SIMPSolver
+from topology.simp_solver import SIMPSolver
 
 def test_simp_output_shape():
     solver = SIMPSolver(nx=16, ny=8, nz=4)

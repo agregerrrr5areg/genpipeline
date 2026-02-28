@@ -1,6 +1,6 @@
 import numpy as np
 from pathlib import Path
-from topology_solver.solver import TopologySolver
+from topology.solver import TopologySolver
 
 def test_solver_runs_and_returns_stl(tmp_path):
     ts = TopologySolver(nx=16, ny=8, nz=8, n_iters=5)
