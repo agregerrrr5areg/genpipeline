@@ -1,8 +1,8 @@
 {
   "checkpoint": "checkpoints/vae_best.pth",
-  "val_iou": 0.8187662610759983,
-  "val_bce": 0.017527844393988707,
-  "latent_mean_norm": 8.237741470336914,
-  "latent_std": 1.5065174102783203,
+  "val_iou": 0.8679064852850777,
+  "val_bce": 0.01072415460336518,
+  "latent_mean_norm": 7.420954704284668,
+  "latent_std": 1.3592557907104492,
   "n_val_samples": 77
 }
