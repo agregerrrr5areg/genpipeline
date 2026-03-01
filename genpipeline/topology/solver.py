@@ -50,7 +50,7 @@ class TopologySolver:
         output_dir : directory to write STL
         volfrac    : target volume fraction (0–1)
         """
-        from topology.mesh_export import density_to_stl
+        from .mesh_export import density_to_stl
 
         t0 = time.time()
         if self.backend == "openlsto":
@@ -76,26 +76,27 @@ class TopologySolver:
         density_to_stl(density, out, voxel_size_mm=vsize)
         return out
 
-        def _run_simp(self, sim_cfg: dict, volfrac: float) -> np.ndarray:
-            from topology.simp_solver import SIMPSolver
-            bcs = sim_cfg.get("boundary_conditions")
-            mask = sim_cfg.get("preserved_mask")
-            s = SIMPSolver(nx=self.nx, ny=self.ny, nz=self.nz, boundary_conditions=bcs, preserved_mask=mask)
-            res = s.run(volfrac=volfrac, n_iters=self.n_iters,
-                        force_mag=float(sim_cfg.get("force_n", 1000)))
-            self.last_compliance = s.last_compliance
-            return res
-    
-        def _run_simp_gpu(self, sim_cfg: dict, volfrac: float) -> np.ndarray:
-            from topology.simp_solver_gpu import SIMPSolverGPU
-            bcs = sim_cfg.get("boundary_conditions")
-            mask = sim_cfg.get("preserved_mask")
-            s = SIMPSolverGPU(nx=self.nx, ny=self.ny, nz=self.nz, boundary_conditions=bcs, preserved_mask=mask)
-            res = s.run(volfrac=volfrac, n_iters=self.n_iters,
-                        force_mag=float(sim_cfg.get("force_n", 1000)))
-            self.last_compliance = s.last_compliance
-            return res
-        def _run_openlsto(self, sim_cfg: dict, volfrac: float) -> np.ndarray:
+    def _run_simp(self, sim_cfg: dict, volfrac: float) -> np.ndarray:
+        from .simp_solver import SIMPSolver
+        bcs = sim_cfg.get("boundary_conditions")
+        mask = sim_cfg.get("preserved_mask")
+        s = SIMPSolver(nx=self.nx, ny=self.ny, nz=self.nz, boundary_conditions=bcs, preserved_mask=mask)
+        res = s.run(volfrac=volfrac, n_iters=self.n_iters,
+                    force_mag=float(sim_cfg.get("force_n", 1000)))
+        self.last_compliance = s.last_compliance
+        return res
+
+    def _run_simp_gpu(self, sim_cfg: dict, volfrac: float) -> np.ndarray:
+        from .simp_solver_gpu import SIMPSolverGPU
+        bcs = sim_cfg.get("boundary_conditions")
+        mask = sim_cfg.get("preserved_mask")
+        s = SIMPSolverGPU(nx=self.nx, ny=self.ny, nz=self.nz, boundary_conditions=bcs, preserved_mask=mask)
+        res = s.run(volfrac=volfrac, n_iters=self.n_iters,
+                    force_mag=float(sim_cfg.get("force_n", 1000)))
+        self.last_compliance = s.last_compliance
+        return res
+
+    def _run_openlsto(self, sim_cfg: dict, volfrac: float) -> np.ndarray:
         result = self._openlsto.solve_cantilever(
             nx=self.nx, ny=self.ny, nz=self.nz,
             force=float(sim_cfg.get("force_n", 1000)),

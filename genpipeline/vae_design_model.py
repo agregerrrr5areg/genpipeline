@@ -134,7 +134,7 @@ class DesignVAE(nn.Module):
 
     def reparameterize(self, mu, logvar):
         if mu.is_cuda:
-            import cuda_kernels
+            from . import cuda_kernels
             return cuda_kernels.fused_reparameterize(mu, logvar)
         return mu + torch.randn_like(mu) * torch.exp(0.5 * logvar)
 

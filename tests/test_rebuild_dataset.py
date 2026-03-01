@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from rebuild_dataset import load_pairs
+from scripts.rebuild_dataset import load_pairs
 
 
 def _write_pair(d: Path, stem: str, stress: float = 100.0):

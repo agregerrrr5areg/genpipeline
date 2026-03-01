@@ -539,7 +539,7 @@ if __name__ == "__main__":
     }
 
     if args.voxel_fem:
-        from fem.voxel_fem import VoxelFEMEvaluator
+        from .fem.voxel_fem import VoxelFEMEvaluator
         evaluator = VoxelFEMEvaluator(
             # output_dir=None lets VoxelFEMEvaluator auto-select a
             # Windows-accessible temp when ccx is a .exe binary.

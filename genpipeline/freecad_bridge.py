@@ -190,7 +190,7 @@ def run_extraction(freecad_cmd: str, fcstd_wsl: str,
 # ── Dataset builder ────────────────────────────────────────────────────────────
 
 def build_dataset(output_dir: Path, voxel_resolution: int = 64):
-    from fem.data_pipeline import FEMDataset, DesignSample, VoxelGrid
+    from .fem.data_pipeline import FEMDataset, DesignSample, VoxelGrid
 
     json_files = sorted(output_dir.glob("*_fem_results.json"))
     logger.info(f"Building dataset from {len(json_files)} result files...")
