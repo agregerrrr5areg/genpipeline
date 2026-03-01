@@ -189,10 +189,13 @@ class DesignOptimizer:
         geom = self.sim_cfg.get("geometry_type", "cantilever")
         bounds = GEOM_SPACES.get(geom, GEOM_SPACES["cantilever"])
 
-        for p in param_list:
+        for i, p in enumerate(param_list):
             # Clamp h_mm and r_mm to per-geometry valid ranges
             p["h_mm"] = float(np.clip(p["h_mm"], bounds["h_min"], bounds["h_max"]))
             p["r_mm"] = float(np.clip(p["r_mm"], bounds["r_min"], bounds["r_max"]))
+
+            # Thread z through for VoxelFEMEvaluator.evaluate_batch
+            p["z"] = z_batch[i]
 
             # Use Plastic exclusively
             mat_name = "Plastic_ABS"
@@ -288,6 +291,8 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir",  type=str,  default="./optimization_results")
     parser.add_argument("--config-path", type=str,  default=None,
                         help="Path to gendesign_config.json exported by the FreeCAD workbench")
+    parser.add_argument("--voxel-fem", action="store_true",
+                        help="Use direct CalculiX voxel FEM (bypasses FreeCAD)")
     args = parser.parse_args()
 
     # Load workbench config if provided (overrides CLI defaults)
@@ -322,7 +327,17 @@ if __name__ == "__main__":
         "force_direction":   wb_cfg.get("force_direction", [0, 0, -1]),
     }
 
-    evaluator = BridgeEvaluator(n_workers=args.q, output_dir=args.output_dir)
+    if args.voxel_fem:
+        from voxel_fem import VoxelFEMEvaluator
+        evaluator = VoxelFEMEvaluator(
+            output_dir=args.output_dir,
+            fixed_face=sim_cfg.get("fixed_face", "x_min"),
+            load_face=sim_cfg.get("load_face", "x_max"),
+            force_n=sim_cfg.get("force_n", 1000.0),
+            vae_model=vae,
+        )
+    else:
+        evaluator = BridgeEvaluator(n_workers=args.q, output_dir=args.output_dir)
     optimizer = DesignOptimizer(vae, evaluator, latent_dim=32, sim_cfg=sim_cfg)
 
     optimizer.run_optimization(n_iterations=n_iter, q=args.q)

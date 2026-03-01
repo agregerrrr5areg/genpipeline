@@ -334,6 +334,7 @@ class VoxelFEMEvaluator:
         fixed_face: str = "x_min",
         load_face: str = "x_max",
         force_n: float = 1000.0,
+        vae_model=None,
     ):
         self.ccx_cmd    = ccx_cmd or find_ccx()
         self.output_dir = Path(output_dir)
@@ -341,6 +342,7 @@ class VoxelFEMEvaluator:
         self.fixed_face = fixed_face
         self.load_face  = load_face
         self.force_n    = force_n
+        self.vae_model  = vae_model
         self.evaluation_history = []
         self._counter   = 0
 
@@ -407,6 +409,26 @@ class VoxelFEMEvaluator:
             "results": result,
         })
         return result
+
+    def evaluate_batch(self, param_list: list) -> list:
+        """BridgeEvaluator-compatible interface. Reads 'z' from each param dict."""
+        if self.vae_model is None:
+            raise RuntimeError("VoxelFEMEvaluator.evaluate_batch requires vae_model set at construction")
+        results = []
+        for p in param_list:
+            z = p.get("z")
+            if z is None:
+                results.append({"stress": 1e6, "compliance": 1e6, "mass": 1.0, "parameters": p})
+                continue
+            res = self.evaluate(np.asarray(z), self.vae_model)
+            res["parameters"] = p
+            results.append(res)
+        return results
+
+    def save_history(self, path: str):
+        import json
+        with open(path, 'w') as f:
+            json.dump(self.evaluation_history, f, indent=2)
 
 
 # ── CLI test mode ──────────────────────────────────────────────────────────────
