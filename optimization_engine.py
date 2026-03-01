@@ -93,6 +93,16 @@ class BridgeEvaluator:
             json.dump(self.evaluation_history, f, indent=2)
 
 
+# Per-geometry parameter bounds: h_mm and r_mm semantics vary by geometry type.
+# These clamp the parameter_head output to physically valid ranges.
+GEOM_SPACES = {
+    "cantilever": {"h_min": 5.0,  "h_max": 20.0, "r_min": 0.0, "r_max": 5.0},
+    "tapered":    {"h_min": 8.0,  "h_max": 25.0, "r_min": 2.0, "r_max": 7.0},
+    "ribbed":     {"h_min": 6.0,  "h_max": 20.0, "r_min": 2.0, "r_max": 6.0},
+    "lbracket":   {"h_min": 8.0,  "h_max": 25.0, "r_min": 5.0, "r_max": 20.0},
+}
+
+
 class DesignOptimizer:
     def __init__(self, vae_model, fem_evaluator, device='cuda', latent_dim=32, sim_cfg=None):
         self.vae = vae_model
@@ -101,6 +111,13 @@ class DesignOptimizer:
         self.latent_dim = latent_dim
         self.sim_cfg = sim_cfg or {"w_stress": 1.0, "w_compliance": 0.1, "w_mass": 0.01}
         self.vae.eval()
+
+        # Load materials DB once
+        try:
+            with open("materials.json") as f:
+                self.materials_db = json.load(f)
+        except FileNotFoundError:
+            self.materials_db = {"Plastic_ABS": {"E_mpa": 2300, "poisson": 0.35, "density": 1050}}
 
         self.gp_model = None
         self.x_history = []
@@ -125,11 +142,6 @@ class DesignOptimizer:
 
     def optimize_step_parallel(self, q=4):
         """MOBO Step: Explore the Pareto Front of Stress vs Mass for Plastic."""
-        # Focus exclusively on Plastic
-        with open("materials.json", "r") as f:
-            self.materials_db = json.load(f)
-        self.material_names = ["Plastic_ABS"] # Hardcoded to plastic
-        n_mats = len(self.material_names)
 
         if not BOTORCH_AVAILABLE or len(self.x_history) < 10:
             # Seed with Latent points only (material is fixed)
@@ -167,13 +179,15 @@ class DesignOptimizer:
     def _evaluate_latent_batch(self, z_batch):
         # z_batch contains [z_0...z_31]
         param_list = [self.geometry_to_parameters(z) for z in z_batch]
-        
-        for i, p in enumerate(param_list):
-            # Clamp geometry
-            p["h_mm"] = max(p["h_mm"], 5.0)
-            r_max = (p["h_mm"] - 5.0) / 2.0
-            p["r_mm"] = max(0.0, min(p["r_mm"], r_max))
-            
+
+        geom = self.sim_cfg.get("geometry_type", "cantilever")
+        bounds = GEOM_SPACES.get(geom, GEOM_SPACES["cantilever"])
+
+        for p in param_list:
+            # Clamp h_mm and r_mm to per-geometry valid ranges
+            p["h_mm"] = float(np.clip(p["h_mm"], bounds["h_min"], bounds["h_max"]))
+            p["r_mm"] = float(np.clip(p["r_mm"], bounds["r_min"], bounds["r_max"]))
+
             # Use Plastic exclusively
             mat_name = "Plastic_ABS"
             p["material_name"] = mat_name
@@ -203,23 +217,39 @@ class DesignOptimizer:
         logger.info(f"Starting Multi-Objective Parallel Discovery (q={q})...")
         for i in range(n_iterations):
             self.optimize_step_parallel(q=q)
-            logger.info(f"Round {i+1}/{n_iterations} complete. Pareto Designs Found: {is_non_dominated(-torch.tensor(self.y_history)).sum()}")
-        
-        # Find final Pareto Front
-        y_tensor = torch.tensor(self.y_history)
-        pareto_mask = is_non_dominated(-y_tensor) # negate because we minimize
-        best_z_idx = np.argmin([ (self.sim_cfg["w_stress"] * y[0] + self.sim_cfg["w_mass"] * y[1]) for y in self.y_history])
-        
+            valid = [y for y in self.y_history if y[0] < 1e5]
+            if valid and BOTORCH_AVAILABLE:
+                n_pareto = is_non_dominated(-torch.tensor(valid)).sum().item()
+            else:
+                n_pareto = 0
+            logger.info(f"Round {i+1}/{n_iterations} complete. Valid={len(valid)}  Pareto={n_pareto}")
+
+        # Find best non-failed design
+        valid_indices = [i for i, y in enumerate(self.y_history) if y[0] < 1e5]
+        if not valid_indices:
+            logger.warning("All evaluations failed (stress=1e6). Check FreeCAD/FEM setup.")
+            return np.zeros(self.latent_dim), [1e6, 1.0]
+
+        best_z_idx = min(valid_indices,
+                         key=lambda i: (self.sim_cfg["w_stress"] * self.y_history[i][0]
+                                        + self.sim_cfg["w_mass"]  * self.y_history[i][1]))
         return self.x_history[best_z_idx], self.y_history[best_z_idx]
 
     def save_results(self, output_dir: str = "./optimization_results"):
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
-        
-        y_tensor = torch.tensor(self.y_history)
-        pareto_mask = is_non_dominated(-y_tensor)
-        
-        pareto_indices = torch.where(pareto_mask)[0].tolist()
+
+        # Exclude obviously failed evaluations (FEM returned sentinel 1e6)
+        valid_idx = [i for i, y in enumerate(self.y_history) if y[0] < 1e5]
+        if not valid_idx:
+            logger.warning("No valid evaluations to save.")
+            json.dump({"pareto_front": [], "history_y": [], "best_bbox": None},
+                      open(out_path / "optimization_history.json", "w"))
+            return
+
+        y_valid = torch.tensor([self.y_history[i] for i in valid_idx], dtype=torch.float64)
+        pareto_mask = is_non_dominated(-y_valid)
+        pareto_indices = [valid_idx[i] for i in torch.where(pareto_mask)[0].tolist()]
         pareto_front = [
             {
                 "stress": self.y_history[idx][0],
