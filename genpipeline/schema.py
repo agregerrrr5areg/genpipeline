@@ -11,6 +11,7 @@ class DesignParameters(BaseModel):
     geometry_type: str = Field("cantilever", description="Type of geometry (cantilever, lbracket, etc.)")
     material_name: str = Field("Plastic_ABS", description="Material identifier")
     material_cfg: Optional[Dict[str, Any]] = Field(None, description="Detailed material properties (E, poisson)")
+    latent_z: Optional[List[float]] = Field(None, description="Latent space representation (z-vector)")
 
 class FEMResult(BaseModel):
     """Structured results from a Finite Element Method simulation."""

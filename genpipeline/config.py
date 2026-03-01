@@ -2,7 +2,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional
-from schema import PipelineConfig
+from .schema import PipelineConfig
 
 logger = logging.getLogger(__name__)
 

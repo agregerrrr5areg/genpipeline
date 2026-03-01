@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import trimesh
 import torch
 from torch.utils.data import Dataset, DataLoader
-from schema import DesignParameters, FEMResult, DesignSample as PydanticDesignSample
+from genpipeline.schema import DesignParameters, FEMResult, DesignSample as PydanticDesignSample
 import logging
 import pandas as pd
 

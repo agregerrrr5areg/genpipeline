@@ -1,8 +1,8 @@
 import torch
 import logging
 from pathlib import Path
-from vae_design_model import DesignVAE, VAETrainer
-from schema import PipelineConfig
+from .vae_design_model import VAETrainer, DesignVAE
+from .schema import PipelineConfig
 
 logger = logging.getLogger(__name__)
 

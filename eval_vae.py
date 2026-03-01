@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 
 def load_model_and_data(ckpt_path: str, fem_data: str, batch_size: int, device: str):
-    from vae_design_model import DesignVAE
+    from genpipeline.vae_design_model import DesignVAE
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     latent_dim   = ckpt.get("latent_dim",   32)
     input_shape  = ckpt.get("input_shape",  (64, 64, 64))
@@ -92,7 +92,7 @@ def export_samples(model, latent_dim, output_dir: Path, device, n_samples=8):
     """Decode n random latent vectors to STL."""
     try:
         import trimesh
-        from pipeline_utils import VoxelConverter
+        from genpipeline.pipeline_utils import VoxelConverter
     except ImportError:
         log.warning("trimesh or pipeline_utils not available — skipping STL export")
         return

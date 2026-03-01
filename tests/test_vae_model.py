@@ -15,7 +15,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def vae():
-    from vae_design_model import DesignVAE
+    from genpipeline.vae_design_model import DesignVAE
     model = DesignVAE(input_shape=(64, 64, 64), latent_dim=32).cuda()
     model.eval()
     return model
@@ -72,7 +72,7 @@ class TestDesignVAEShapes:
 
 class TestDesignVAECheckpoint:
     def test_checkpoint_loads(self, tmp_path):
-        from vae_design_model import DesignVAE
+        from genpipeline.vae_design_model import DesignVAE
         model = DesignVAE(input_shape=(64, 64, 64), latent_dim=32).cuda()
         ckpt_path = tmp_path / "test.pth"
         torch.save({
@@ -90,7 +90,7 @@ class TestDesignVAECheckpoint:
         ckpt_path = Path("checkpoints/vae_best.pth")
         if not ckpt_path.exists():
             pytest.skip("checkpoints/vae_best.pth not found")
-        from vae_design_model import DesignVAE
+        from genpipeline.vae_design_model import DesignVAE
         state = torch.load(str(ckpt_path), map_location="cuda", weights_only=False)
         model = DesignVAE(
             input_shape=state.get("input_shape", (64, 64, 64)),

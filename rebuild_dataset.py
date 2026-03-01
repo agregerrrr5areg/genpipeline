@@ -20,8 +20,8 @@ import torch
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).parent))
-from fem.data_pipeline import VoxelGrid, FEMDataset, DesignSample
-from schema import FEMResult, DesignParameters
+from fem.data_pipeline import VoxelGrid, FEMDataset
+from genpipeline.schema import DesignSample, FEMResult, DesignParameters
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)

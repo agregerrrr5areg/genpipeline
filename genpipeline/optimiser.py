@@ -1,10 +1,10 @@
 import torch
 import logging
 from pathlib import Path
-from optimisation_engine import DesignOptimizer
-from vae_design_model import DesignVAE
+from .optimization_engine import DesignOptimizer
+from .vae_design_model import DesignVAE
 from fem.voxel_fem import VoxelFEMEvaluator
-from schema import PipelineConfig
+from .schema import PipelineConfig
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +29,18 @@ def run_optimisation(config: PipelineConfig):
     vae = vae.to(config.device)
     
     # Initialize Evaluator and Optimizer
-    evaluator = VoxelFEMEvaluator(resolution=config.voxel_resolution)
+    evaluator = VoxelFEMEvaluator(vae_model=vae)
     optimizer = DesignOptimizer(
         vae, 
         evaluator, 
         device=config.device, 
         latent_dim=config.latent_dim,
-        output_dir=config.output_dir
     )
     
     # Run optimization
-    best_z, results = optimizer.optimize(n_iterations=config.n_optimisation_iterations)
+    best_z, results = optimizer.run_optimisation(
+        n_iterations=config.n_optimisation_iterations,
+        output_dir=config.output_dir
+    )
     
     return best_z, results

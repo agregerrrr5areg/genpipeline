@@ -18,7 +18,7 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from pipeline_utils import NumpyEncoder as _NumpyEncoder, smooth_voxels, FEM_SENTINEL, FEM_VALID_THRESHOLD, is_valid_fem_result
+from genpipeline.pipeline_utils import NumpyEncoder as _NumpyEncoder, smooth_voxels, FEM_SENTINEL, FEM_VALID_THRESHOLD, is_valid_fem_result
 
 logger = logging.getLogger(__name__)
 
@@ -465,18 +465,24 @@ class VoxelFEMEvaluator:
         return result
 
     def evaluate_batch(self, param_list: list) -> list:
-        """BridgeEvaluator-compatible interface. Reads 'z' from each param dict."""
+        """BridgeEvaluator-compatible interface. Reads 'latent_z' from each param."""
         if self.vae_model is None:
             raise RuntimeError("VoxelFEMEvaluator.evaluate_batch requires vae_model set at construction")
         results = []
+        from genpipeline.schema import FEMResult
         for p in param_list:
-            z = p.get("z")
+            z = getattr(p, "latent_z", None)
             if z is None:
-                results.append({"stress": FEM_SENTINEL, "compliance": FEM_SENTINEL,
-                                 "mass": 1.0, "failure_reason": "no_z", "parameters": p})
+                results.append(FEMResult(stress_max=FEM_SENTINEL, compliance=FEM_SENTINEL, mass=1.0, success=False))
                 continue
-            res = self.evaluate(np.asarray(z), self.vae_model)
-            res["parameters"] = p
+            res_dict = self.evaluate(np.asarray(z), self.vae_model)
+            # Map 'stress' to 'stress_max' if needed
+            res = FEMResult(
+                stress_max=float(res_dict.get("stress", FEM_SENTINEL)),
+                compliance=float(res_dict.get("compliance", FEM_SENTINEL)),
+                mass=float(res_dict.get("mass", 1.0)),
+                success=res_dict.get("failure_reason") is None
+            )
             results.append(res)
         return results
 

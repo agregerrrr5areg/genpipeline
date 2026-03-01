@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline_utils import FEM_SENTINEL, FEM_VALID_THRESHOLD
-from optimization_engine import DesignOptimizer
+from genpipeline.pipeline_utils import FEM_SENTINEL, FEM_VALID_THRESHOLD
+from genpipeline.optimization_engine import DesignOptimizer
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

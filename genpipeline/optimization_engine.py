@@ -6,10 +6,10 @@ import logging
 import json
 import concurrent.futures
 
-import freecad_bridge
-from blackwell_compat import botorch_device
-from pipeline_utils import NumpyEncoder as _NumpyEncoder, smooth_voxels, FEM_SENTINEL, FEM_VALID_THRESHOLD, is_valid_fem_result
-from schema import DesignParameters, FEMResult, OptimizationSample
+from . import freecad_bridge
+from .blackwell_compat import botorch_device
+from .pipeline_utils import NumpyEncoder as _NumpyEncoder, smooth_voxels, FEM_SENTINEL, FEM_VALID_THRESHOLD, is_valid_fem_result
+from .schema import DesignParameters, FEMResult, OptimizationSample
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -349,7 +349,11 @@ class DesignOptimizer:
             
             z_batch = np.array(refined_zs)
 
-        param_list = [self.geometry_to_parameters(z) for z in z_batch]
+        param_list = []
+        for z in z_batch:
+            p = self.geometry_to_parameters(z)
+            p.latent_z = z.tolist()
+            param_list.append(p)
 
         geom = self.sim_cfg.get("geometry_type", "cantilever")
         bounds = GEOM_SPACES.get(geom, GEOM_SPACES["cantilever"])
@@ -484,7 +488,7 @@ class DesignOptimizer:
 
 if __name__ == "__main__":
     import argparse
-    from vae_design_model import DesignVAE
+    from genpipeline.vae_design_model import DesignVAE
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-checkpoint", type=str, required=True)
@@ -557,7 +561,7 @@ if __name__ == "__main__":
 
     # Auto-export Pareto STLs
     try:
-        from pipeline_utils import VoxelConverter, ManufacturabilityConstraints
+        from genpipeline.pipeline_utils import VoxelConverter, ManufacturabilityConstraints
         import trimesh as _trimesh
         from pathlib import Path as _Path
         hist_path = _Path(args.output_dir) / "optimisation_history.json"

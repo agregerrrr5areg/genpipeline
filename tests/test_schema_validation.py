@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 import torch
-from schema import DesignParameters, FEMResult, PipelineConfig
+from genpipeline.schema import DesignParameters, FEMResult, PipelineConfig
 from pydantic import ValidationError
 
 def test_design_parameters_validation():
