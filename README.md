@@ -14,6 +14,14 @@ Generative design pipeline combining FreeCAD FEM simulation, 3D SIMP topology op
 - **Blackwell Optimised** — Custom 3D VAE and CUDA kernels (voxelisation up to 832× faster) tuned for RTX 50 series card precision and memory constraints.
     
 ---
+\
+---
+
+## Run in wsl
+
+- **WSL-2 Ubuntu 22.04 Linux** — Run in here for conflicting dependacies :)
+    
+---
 
 ## MANDATE: No Non-Physical Data
 All training data must originate from physics-based simulations (FreeCAD/CalculiX or SIMP). **Non-physical 'synthetic' data** (random noise, pure geometric heuristics) **is strictly forbidden.** The model must exclusively learn from physically plausible mechanics.
