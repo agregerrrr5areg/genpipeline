@@ -11,6 +11,8 @@ The pipeline has been upgraded from a scaffolding state to a high-precision disc
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **Closed-Loop BO** | ✅ Active | BO now triggers real FreeCAD simulations via the WSL2 bridge. |
+| **Multi-Geometry BO** | ✅ Active | Cantilever, L-bracket, tapered beam, ribbed plate — each with correct BCs and per-geometry BO bounds. |
+| **Voxel FEM Path** | ✅ Active | Direct CalculiX C3D8 hex mesh from decoded voxels — bypasses FreeCAD entirely (`--voxel-fem`). |
 | **Organic Filtering**| ✅ Active | VAE decoding uses a Gaussian-Heaviside density filter for smooth, bone-like forms. |
 | **Scale Preservation**| ✅ Active | 10x50mm in FreeCAD remains exactly 10x50mm in the exported STL. |
 | **Hardware Speed** | ✅ Optimized | Batch size 128 + FP8 (uint8) storage + Pinned memory for RTX 5080. |
@@ -24,14 +26,17 @@ The pipeline has been upgraded from a scaffolding state to a high-precision disc
 ```
 1. DATA GENERATION (freecad_bridge.py)
    ↑ Parallel (ThreadPool) extraction of Parametric Variants (C3D10 Quadratic elements).
-   
+   ↑ Supports 4 geometry types: cantilever, lbracket, tapered, ribbed.
+
 2. REPRESENTATION LEARNING (vae_design_model.py)
-   ↑ 3D Convolutional VAE learns latent "DNA" of structures. 
+   ↑ 3D Convolutional VAE learns latent "DNA" of structures.
    ↑ Predictor heads learn to map latent vectors to Performance (Stress/Mass) and Parameters (h/r).
 
 3. ORGANIC DISCOVERY (optimization_engine.py)
-   ↑ BoTorch Gaussian Process explores the VAE latent space.
-   ↑ PROPOSE z → ORGANIC FILTER → PHYSICALITY CHECK → BRIDGE SIMULATION → UPDATE GP.
+   ↑ BoTorch Gaussian Process explores the design space.
+   ↑ Stage 1: GPU surrogate sweep in 16-D latent space (VAE predictor).
+   ↑ Stage 2a (default): Physical BO in per-geometry (h, r) space via FreeCAD bridge.
+   ↑ Stage 2b (--voxel-fem): Latent-space BO with direct CalculiX hex mesh (no FreeCAD).
 
 4. ACCURATE EXPORT (utils.py)
    ↑ Scale-preserved Marching Cubes using original FreeCAD BoundBox metadata.
@@ -76,13 +81,36 @@ python quickstart.py --step 5
 ## 💎 Features
 
 ### 🌿 Organic Discovery
-The decoder now implements an **Organic Density Filter**. Instead of sharp pixelated voxels, the optimizer explores a continuous density field, leading to structures that resemble biological growth or high-end topology optimization.
+The decoder implements an **Organic Density Filter**. Instead of sharp pixelated voxels, the optimizer explores a continuous density field, leading to structures that resemble biological growth or high-end topology optimization.
+
+### 🔷 Multi-Geometry Bayesian Optimisation
+Four geometry types are fully wired end-to-end with correct FEM boundary conditions and dedicated BO parameter bounds:
+
+| Geometry | Fixed BC | Load BC | BO params |
+|----------|----------|---------|-----------|
+| `cantilever` | left x-face | right x-face | h ∈ [5,20] mm, r ∈ [0,5] mm |
+| `lbracket` | bottom z-face (vertical arm) | x-max tip (horizontal arm) | arm_h ∈ [8,25] mm, thickness ∈ [5,20] mm |
+| `tapered` | left x-face | right x-face | h_start ∈ [8,25] mm, taper ∈ [2,7] |
+| `ribbed` | left x-face | right x-face | rib_h ∈ [6,20] mm, plate_frac ∈ [2,6] |
+
+Switch geometry via `"geometry_type"` in `sim_config.json`.
+
+### ⚡ Direct CalculiX Voxel FEM (`--voxel-fem`)
+`voxel_fem.py` converts VAE-decoded voxel grids directly into CalculiX C3D8 hex meshes and runs `ccx` without FreeCAD. This enables true non-parametric topology optimisation: the full 32³ voxel structure is evaluated, not just an (h, r) parameter pair.
+
+```bash
+# Unit test (10×10×10 solid cube, stress + displacement verified):
+python voxel_fem.py --test
+
+# Run full optimisation with voxel FEM in Stage 2:
+python optimization_engine.py --model-checkpoint checkpoints/vae_best.pth --voxel-fem
+```
 
 ### 📐 Scale Preservation
-We solved the "unit voxel" problem. Every design sample now carries its **BoundBox** metadata. The exported STL is shifted and scaled back to its real-world origin and dimensions, making it ready for immediate 3D printing or CAD assembly.
+Every design sample carries its **BoundBox** metadata. The exported STL is shifted and scaled back to its real-world origin and dimensions, ready for 3D printing or CAD assembly.
 
 ### 🛡️ Physicality Guardrails
-The optimizer is barred from proposing "void" designs. Before a simulation is even attempted, the system checks for **Structural Connectivity**. If a design is fragmented or too thin, it is penalized and rejected, saving CPU cycles.
+Before a simulation is attempted the system checks for **Structural Connectivity**. Fragmented or too-thin designs are penalised and skipped, saving CPU cycles.
 
 ---
 
