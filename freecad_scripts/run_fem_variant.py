@@ -148,13 +148,14 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
     # Cap base_length at half the hole radius so the feature is always resolved.
     base_length = 3.0 if e_mpa > 10000 else 1.5
     if r_mm > 0.5:
-        base_length = min(base_length, r_mm / 2.0)
-    base_length = max(base_length, 0.5)  # never go below 0.5mm (too slow)
+        # Resolve hole with ~2 elements across diameter, but clamp to [1.0, 3.0]mm
+        # to avoid timeout: r=0.77 → r/2=0.38mm → 200+ elements/side → hangs
+        base_length = min(base_length, max(r_mm / 2.0, 1.0))
 
     mesh_obj = ObjectsFem.makeMeshGmsh(doc, "FEMMeshGmsh")
     mesh_obj.Shape = shape_obj
     mesh_obj.CharacteristicLengthMax = f"{base_length} mm"
-    mesh_obj.CharacteristicLengthMin = f"{base_length / 4.0} mm"
+    mesh_obj.CharacteristicLengthMin = f"{base_length / 3.0} mm"
     mesh_obj.ElementOrder = "2nd"               # C3D10
     analysis.addObject(mesh_obj)
 
