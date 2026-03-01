@@ -8,6 +8,7 @@ Usage:
     python voxel_fem.py --test   # unit test on 10×10×10 solid cube
 """
 
+import json
 import logging
 import os
 import shutil
@@ -16,6 +17,17 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import numpy as np
+
+
+class _NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        return super().default(obj)
 
 logger = logging.getLogger(__name__)
 
@@ -330,13 +342,20 @@ class VoxelFEMEvaluator:
     def __init__(
         self,
         ccx_cmd: str = None,
-        output_dir: str = "./optimization_results/voxel_fem",
+        output_dir: str = None,
         fixed_face: str = "x_min",
         load_face: str = "x_max",
         force_n: float = 1000.0,
         vae_model=None,
     ):
-        self.ccx_cmd    = ccx_cmd or find_ccx()
+        self.ccx_cmd = ccx_cmd or find_ccx()
+        # Default to a Windows-accessible temp dir when ccx is a Windows .exe,
+        # otherwise use a local Linux directory.
+        if output_dir is None:
+            if self.ccx_cmd and self.ccx_cmd.endswith(".exe"):
+                output_dir = "/mnt/c/Windows/Temp/voxel_fem"
+            else:
+                output_dir = "./optimization_results/voxel_fem"
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.fixed_face = fixed_face
@@ -426,9 +445,8 @@ class VoxelFEMEvaluator:
         return results
 
     def save_history(self, path: str):
-        import json
         with open(path, 'w') as f:
-            json.dump(self.evaluation_history, f, indent=2)
+            json.dump(self.evaluation_history, f, indent=2, cls=_NumpyEncoder)
 
 
 # ── CLI test mode ──────────────────────────────────────────────────────────────

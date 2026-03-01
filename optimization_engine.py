@@ -275,7 +275,7 @@ class DesignOptimizer:
             {
                 "stress": self.y_history[idx][0],
                 "mass": self.y_history[idx][1],
-                "params": self.fem_evaluator.evaluation_history[idx]["parameters"] if idx < len(self.fem_evaluator.evaluation_history) else {},
+                "params": self.fem_evaluator.evaluation_history[idx].get("parameters", {}) if idx < len(self.fem_evaluator.evaluation_history) else {},
                 "latent_z": self.x_history[idx].tolist()
             }
             for idx in pareto_indices
@@ -342,7 +342,8 @@ if __name__ == "__main__":
     if args.voxel_fem:
         from voxel_fem import VoxelFEMEvaluator
         evaluator = VoxelFEMEvaluator(
-            output_dir=args.output_dir,
+            # output_dir=None lets VoxelFEMEvaluator auto-select a
+            # Windows-accessible temp when ccx is a .exe binary.
             fixed_face=sim_cfg.get("fixed_face", "x_min"),
             load_face=sim_cfg.get("load_face", "x_max"),
             force_n=sim_cfg.get("force_n", 1000.0),
