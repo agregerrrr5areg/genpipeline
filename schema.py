@@ -40,3 +40,52 @@ class DesignSample(BaseModel):
     metrics: FEMResult
     parameters: DesignParameters
     voxel_grid: Optional[np.ndarray] = Field(None, description="3D density grid")
+
+class OptimisationConfig(BaseModel):
+    """Configuration for the Bayesian Optimisation loop."""
+    acquisition_function: str = "UCB"
+    beta: float = 0.1
+    use_botorch: bool = True
+    num_restarts: int = 10
+    raw_samples: int = 512
+    max_iterations: int = 100
+    parallel_evaluations: int = 4
+
+class PerformanceWeights(BaseModel):
+    """Weights for the multi-objective optimisation."""
+    stress: float = 1.0
+    compliance: float = 0.1
+    mass: float = 0.05
+
+class ManufacturingConstraints(BaseModel):
+    """Physical constraints for manufacturability."""
+    min_feature_size_mm: float = 5.0
+    max_overhang_angle_deg: float = 45.0
+    min_volume_fraction: float = 0.15
+
+class PipelineConfig(BaseModel):
+    """Main configuration for the entire generative design pipeline."""
+    freecad_project_dir: str = "./freecad_designs"
+    fem_data_output: str = "./fem/data"
+    voxel_resolution: int = 64
+    use_sdf: bool = False
+    latent_dim: int = 32
+    batch_size: int = 128
+    epochs: int = 500
+    learning_rate: float = 0.0003
+    beta_vae: float = 1.0
+    pos_weight: float = 30.0
+    device: str = "cuda"
+    n_optimisation_iterations: int = 1000
+    output_dir: str = "./optimisation_results"
+    checkpoint_dir: str = "./checkpoints"
+    log_dir: str = "./logs"
+    seed: int = 42
+    
+    optimisation: OptimisationConfig = Field(default_factory=OptimisationConfig)
+    performance_weights: PerformanceWeights = Field(default_factory=PerformanceWeights)
+    manufacturing_constraints: ManufacturingConstraints = Field(default_factory=ManufacturingConstraints)
+
+    @property
+    def input_shape(self) -> List[int]:
+        return [self.voxel_resolution, self.voxel_resolution, self.voxel_resolution]

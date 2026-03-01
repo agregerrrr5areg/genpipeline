@@ -38,13 +38,16 @@ def _make_mock_vae(latent_dim=4):
 
 def _make_sentinel_evaluator():
     """Evaluator that always returns all-sentinel results."""
+    from types import SimpleNamespace
     ev = MagicMock()
     ev.evaluation_history = []
 
     def evaluate_batch(param_list):
         return [
-            {"stress": FEM_SENTINEL, "compliance": FEM_SENTINEL,
-             "mass": 1.0, "failure_reason": "no_ccx", "parameters": p}
+            SimpleNamespace(
+                stress_max=FEM_SENTINEL, compliance=FEM_SENTINEL,
+                mass=1.0, failure_reason="no_ccx", parameters=p, bbox=None
+            )
             for p in param_list
         ]
 
@@ -55,6 +58,7 @@ def _make_sentinel_evaluator():
 
 def _make_mixed_evaluator(n_valid=3, n_sentinel=2):
     """Evaluator returning a mix of valid and sentinel results."""
+    from types import SimpleNamespace
     call_count = [0]
     ev = MagicMock()
     history = []
@@ -64,11 +68,15 @@ def _make_mixed_evaluator(n_valid=3, n_sentinel=2):
         for p in param_list:
             call_count[0] += 1
             if call_count[0] % 2 == 0:
-                r = {"stress": FEM_SENTINEL, "compliance": FEM_SENTINEL,
-                     "mass": 1.0, "failure_reason": "no_ccx", "parameters": p}
+                r = SimpleNamespace(
+                    stress_max=FEM_SENTINEL, compliance=FEM_SENTINEL,
+                    mass=1.0, failure_reason="no_ccx", parameters=p, bbox=None
+                )
             else:
                 stress = float(10 + call_count[0])  # small valid stress
-                r = {"stress": stress, "compliance": 0.1, "mass": 0.5, "parameters": p}
+                r = SimpleNamespace(
+                    stress_max=stress, compliance=0.1, mass=0.5, parameters=p, bbox={"xmin": 0}
+                )
             history.append(r)
             results.append(r)
         return results
@@ -102,7 +110,7 @@ class TestAllFailedEvalsFallback:
         assert len(results) == 2
         # All stress values should equal sentinel
         for r in results:
-            assert r["stress"] == FEM_SENTINEL
+            assert r.stress_max == FEM_SENTINEL
 
     def test_run_optimisation_all_failed_returns_zeros(self):
         """
