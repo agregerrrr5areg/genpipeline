@@ -1,8 +1,14 @@
-import os
+import sys
 import time
 import json
 import glob
 from pathlib import Path
+
+LINES = 10  # number of lines in the dashboard block
+
+def move_up(n):
+    sys.stdout.write(f"\033[{n}A\033[J")
+    sys.stdout.flush()
 
 def get_progress():
     files = glob.glob("optimization_results/fem/*.json")
@@ -39,8 +45,10 @@ def render_dashboard():
         elapsed = time.time() - start_time
         best_str = f"{best_stress:.2f} MPa" if best_stress < float('inf') else "N/A"
 
-        # Clear and Print
-        os.system('clear')
+        if 'first' not in locals():
+            first = True
+        else:
+            move_up(LINES)
         print("="*60)
         print("GENPIPELINE LIVE DISCOVERY VIEWER (RTX 5080)")
         print("="*60)
