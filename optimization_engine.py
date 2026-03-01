@@ -46,6 +46,12 @@ class BridgeEvaluator:
         r_mm = float(parameters.get("r_mm", 3.0))
         geom = parameters.get("geometry", "cantilever")
 
+        # Pre-check: hole radius must leave enough wall thickness.
+        # r >= h/2 means the cylinder exits the beam face → degenerate geometry.
+        if r_mm > 0.5 and r_mm >= h_mm * 0.45:
+            logger.warning(f"Skipping FEM (degenerate geometry): h={h_mm:.2f} r={r_mm:.2f}, r/h={r_mm/h_mm:.2f}")
+            return {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
+
         logger.info(f"Running FEM evaluation: {geom} h={h_mm:.2f} r={r_mm:.2f}")
         
         result = freecad_bridge.run_variant(
