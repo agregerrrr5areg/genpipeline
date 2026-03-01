@@ -84,9 +84,9 @@ def export_samples(model, latent_dim, output_dir: Path, device, n_samples=8):
     """Decode n random latent vectors to STL."""
     try:
         import trimesh
-        from utils import VoxelConverter
+        from pipeline_utils import VoxelConverter
     except ImportError:
-        log.warning("trimesh or utils not available — skipping STL export")
+        log.warning("trimesh or pipeline_utils not available — skipping STL export")
         return
     output_dir.mkdir(parents=True, exist_ok=True)
     z = torch.randn(n_samples, latent_dim, device=device)

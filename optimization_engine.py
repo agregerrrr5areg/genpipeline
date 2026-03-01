@@ -408,7 +408,7 @@ if __name__ == "__main__":
 
     # Auto-export Pareto STLs
     try:
-        from utils import VoxelConverter, ManufacturabilityConstraints
+        from pipeline_utils import VoxelConverter, ManufacturabilityConstraints
         import trimesh as _trimesh
         from pathlib import Path as _Path
         hist_path = _Path(args.output_dir) / "optimization_history.json"

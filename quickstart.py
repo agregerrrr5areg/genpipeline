@@ -191,7 +191,7 @@ def step_5_export_design(config: PipelineConfig, best_z=None):
     logger.info("=" * 60)
     try:
         from vae_design_model import DesignVAE
-        from utils import VoxelConverter, ManufacturabilityConstraints
+        from pipeline_utils import VoxelConverter, ManufacturabilityConstraints
     except ImportError:
         logger.error("Modules not found")
         return False
