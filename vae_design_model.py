@@ -58,6 +58,8 @@ class DesignVAE(nn.Module):
             nn.MaxPool3d(kernel_size=2, stride=2),
             Conv3DBlock(64, 64, kernel_size=3, stride=1, padding=1),
             nn.MaxPool3d(kernel_size=2, stride=2),
+            Conv3DBlock(64, 64, kernel_size=3, stride=1, padding=1),  # Added
+            nn.MaxPool3d(kernel_size=2, stride=2),  # Added
         )
 
         self.fc_encode = nn.Sequential(
@@ -83,7 +85,8 @@ class DesignVAE(nn.Module):
             ConvTranspose3DBlock(16, 8, kernel_size=4, stride=2, padding=1, output_padding=0),
             ConvTranspose3DBlock(8, 16, kernel_size=4, stride=2, padding=1, output_padding=0),
             ConvTranspose3DBlock(16, 8, kernel_size=4, stride=2, padding=1, output_padding=0),
-            nn.Conv3d(8, 1, kernel_size=3, padding=1),
+            ConvTranspose3DBlock(8, 16, kernel_size=4, stride=2, padding=1, output_padding=0),  # Added
+            nn.Conv3d(16, 1, kernel_size=3, padding=1),
             # No Sigmoid here — outputs logits for BCEWithLogitsLoss
             # Apply torch.sigmoid() at inference time
         )
