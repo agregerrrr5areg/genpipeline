@@ -14,7 +14,7 @@ Generative design pipeline combining FreeCAD FEM simulation, 3D SIMP topology op
 - **Blackwell Optimised** — Custom 3D VAE and CUDA kernels (voxelisation up to 832× faster) tuned for RTX 50 series card precision and memory constraints.
     
 ---
-\
+
 ---
 
 ## Run in wsl
