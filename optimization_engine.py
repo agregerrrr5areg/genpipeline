@@ -12,6 +12,18 @@ from blackwell_compat import botorch_device
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+class _NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        return super().default(obj)
+
+
 try:
     from botorch.models import SingleTaskGP
     from botorch.fit import fit_gpytorch_mll
@@ -91,7 +103,7 @@ class BridgeEvaluator:
 
     def save_history(self, path: str):
         with open(path, 'w') as f:
-            json.dump(self.evaluation_history, f, indent=2)
+            json.dump(self.evaluation_history, f, indent=2, cls=_NumpyEncoder)
 
 
 # Per-geometry parameter bounds: h_mm and r_mm semantics vary by geometry type.
@@ -275,7 +287,7 @@ class DesignOptimizer:
             "best_bbox": self.best_bbox
         }
         with open(out_path / "optimization_history.json", 'w') as f:
-            json.dump(results, f, indent=2)
+            json.dump(results, f, indent=2, cls=_NumpyEncoder)
         self.fem_evaluator.save_history(out_path / "fem_evaluations.json")
         logger.info(f"MOBO Results Saved. {len(pareto_front)} Pareto-optimal designs identified.")
 
