@@ -170,19 +170,27 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
 
     doc.recompute()
 
-    # ── Fixed constraint (left face, x=0) ─────────────────────────────────
+    # ── Fixed constraint + load face (geometry-dependent) ─────────────────
     import FreeCAD as App
-    left_face  = find_face(shape_obj.Shape, App.Vector(-1, 0, 0))
+    if geom_type == "lbracket":
+        # Fixed: bottom face of vertical arm (outward normal ≈ -Z)
+        fixed_face = find_face(shape_obj.Shape, App.Vector(0, 0, -1))
+        # Load: tip of horizontal arm (outward normal ≈ +X)
+        right_face = find_face(shape_obj.Shape, App.Vector(1, 0, 0))
+        # Direction: downward (-Z face used as direction reference)
+        down_face  = find_face(shape_obj.Shape, App.Vector(0, 0, -1))
+    else:
+        fixed_face = find_face(shape_obj.Shape, App.Vector(-1, 0, 0))
+        right_face = find_face(shape_obj.Shape, App.Vector(1,  0, 0))
+        down_face  = find_face(shape_obj.Shape, App.Vector(0,  0, -1))
+
     fixed = ObjectsFem.makeConstraintFixed(doc, "FEMConstraintFixed")
-    fixed.References = [(shape_obj, left_face)]
+    fixed.References = [(shape_obj, fixed_face)]
     analysis.addObject(fixed)
 
-    # ── Force constraint (right face, x=100, 1000 N transverse) ──────────
-    # Direction face: bottom face (outward normal -Z) — FreeCAD interprets this
+    # ── Force constraint (1000 N transverse, direction via down_face) ─────
+    # Direction face: face with outward normal -Z — FreeCAD interprets this
     # as transverse direction and populates CLOAD correctly.
-    # DirectionVector = App.Vector(0, 0, -1) alone is ignored by the ccx writer.
-    right_face = find_face(shape_obj.Shape, App.Vector(1, 0, 0))
-    down_face  = find_face(shape_obj.Shape, App.Vector(0, 0, -1))
     force = ObjectsFem.makeConstraintForce(doc, "FEMConstraintForce")
     force.References = [(shape_obj, right_face)]
     force.Force      = App.Units.Quantity(f"{cfg.get('force_n', 1000)} N")

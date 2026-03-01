@@ -50,7 +50,9 @@ class BridgeEvaluator:
         # r >= h/2 means the cylinder exits the beam face → degenerate geometry.
         if r_mm > 0.5 and r_mm >= h_mm * 0.45:
             logger.warning(f"Skipping FEM (degenerate geometry): h={h_mm:.2f} r={r_mm:.2f}, r/h={r_mm/h_mm:.2f}")
-            return {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
+            penalty_res = {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
+            self.evaluation_history.append({"parameters": parameters, "results": penalty_res})
+            return penalty_res
 
         # Fix 2: holes with r < 2 mm have fewer than ~12 elements around their
         # circumference with the 1 mm mesh floor (2πr/1mm ≈ 4–12 elements).
@@ -74,7 +76,9 @@ class BridgeEvaluator:
             # If stress is 0, the simulation likely failed to produce results
             if stress < 1e-6 or compliance < 1e-9:
                 logger.warning(f"Simulation returned null results for {geom}. Applying penalty.")
-                return {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
+                penalty_res = {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
+                self.evaluation_history.append({"parameters": parameters, "results": penalty_res})
+                return penalty_res
 
             # Map result keys to the expected internal format
             eval_res = {
@@ -90,7 +94,9 @@ class BridgeEvaluator:
             return eval_res
         else:
             logger.error("FEM simulation failed. Returning penalty.")
-            return {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
+            penalty_res = {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
+            self.evaluation_history.append({"parameters": parameters, "results": penalty_res})
+            return penalty_res
 
     def save_history(self, path: str):
         with open(path, 'w') as f:
@@ -329,8 +335,17 @@ class DesignOptimizer:
         w_m = cfg.get("w_mass",       0.01)
         geom = cfg.get("geometry_type", "cantilever")
 
-        H_MIN, H_MAX = 5.0, 20.0
-        R_MIN, R_MAX = 0.0,  7.0
+        # Per-geometry parameter bounds.  Both params are normalised to [0,1]
+        # for the GP; the keys map to the dict keys run_fem_variant.py expects.
+        GEOM_SPACES = {
+            "cantilever": dict(mins=[5.0, 0.0],  maxs=[20.0,  5.0]),
+            "tapered":    dict(mins=[8.0, 2.0],  maxs=[25.0,  7.0]),
+            "ribbed":     dict(mins=[6.0, 2.0],  maxs=[20.0,  6.0]),
+            "lbracket":   dict(mins=[8.0, 5.0],  maxs=[25.0, 20.0]),
+        }
+        space = GEOM_SPACES.get(geom, GEOM_SPACES["cantilever"])
+        H_MIN, H_MAX = space["mins"][0], space["maxs"][0]
+        R_MIN, R_MAX = space["mins"][1], space["maxs"][1]
 
         # Gather clean (h, r, obj) from every successful FEM run so far.
         pts = []
@@ -348,7 +363,7 @@ class DesignOptimizer:
         if len(pts) < 2 or not BOTORCH_AVAILABLE:
             # Too few points for a GP → random draw in physical space.
             h  = float(np.random.uniform(H_MIN, H_MAX))
-            rr = float(np.random.uniform(0.0, h * 0.35))
+            rr = float(np.random.uniform(R_MIN, R_MAX))
         else:
             # Normalise to [0, 1] so GP length-scale priors are meaningful.
             train_X = torch.tensor(
@@ -392,6 +407,50 @@ class DesignOptimizer:
 
         return params, obj
 
+    def optimize_step_voxel_fem(self, voxel_evaluator) -> tuple:
+        """Stage-2 BO step using direct CalculiX voxel FEM in latent space.
+
+        Uses the same UCB/GP machinery as optimize_step() but calls
+        VoxelFEMEvaluator.evaluate(z, vae) instead of the FreeCAD bridge.
+        """
+        cfg = self.sim_cfg
+        w_s = cfg.get("w_stress",     1.0)
+        w_c = cfg.get("w_compliance", 0.1)
+        w_m = cfg.get("w_mass",       0.01)
+
+        if len(self.x_history) < 2 or not BOTORCH_AVAILABLE:
+            z = np.random.randn(self.latent_dim) * 0.5
+            z = np.clip(z, -3.0, 3.0)
+        else:
+            train_X = torch.from_numpy(np.array(self.x_history)).double().to(botorch_device)
+            train_Y = (torch.from_numpy(np.array(self.y_history)).double()
+                       .to(botorch_device).unsqueeze(-1) * -1.0)
+            gp  = SingleTaskGP(train_X, train_Y)
+            mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
+            fit_gpytorch_mll(mll)
+            acq    = UpperConfidenceBound(gp, beta=0.1)
+            bounds = torch.tensor(
+                [[-3.0] * self.latent_dim, [3.0] * self.latent_dim],
+                dtype=torch.float64,
+            ).to(botorch_device)
+            cand, _ = optimize_acqf(
+                acq, bounds=bounds, q=1, num_restarts=10, raw_samples=512,
+            )
+            z = cand[0].cpu().numpy()
+
+        result = voxel_evaluator.evaluate(z, self.vae, self.best_bbox)
+        stress     = float(result.get("stress",     1e6))
+        compliance = float(result.get("compliance", 1e6))
+        mass       = float(result.get("mass",       1.0))
+        obj = w_s * stress + w_c * compliance + w_m * mass
+
+        self.x_history.append(z)
+        self.y_history.append(obj)
+        if obj < min(self.y_history[:-1], default=float("inf")):
+            logger.info(f"  Voxel FEM new best: obj={obj:.2f}  stress={stress:.1f} MPa")
+
+        return z, obj
+
     def _random_search_step(self, n_candidates=20):
         best_obj = float('inf')
         best_z = None
@@ -434,9 +493,15 @@ class DesignOptimizer:
         if not valid_candidates: valid_candidates = [np.zeros(self.latent_dim)]
         return valid_candidates
 
-    def run_optimization(self, n_iterations=900):
-        """Two-stage 1k Discovery."""
-        logger.info(f"Starting 1,000-Point Hybrid Discovery...")
+    def run_optimization(self, n_iterations=900, voxel_evaluator=None):
+        """Two-stage discovery.
+
+        Stage 1: GPU surrogate sweep (VAE performance predictor, no real FEM).
+        Stage 2: BO with real FEM.
+          - Default: physical-space BO in (h_mm, r_mm) via FreeCAD bridge.
+          - voxel_evaluator set: latent-space BO with direct CalculiX voxel FEM.
+        """
+        logger.info("Starting 1,000-Point Hybrid Discovery...")
         gpu_candidates = self.surrogate_gpu_sweep(top_k=100)
         for i, z in enumerate(gpu_candidates):
             obj, bbox = self.objective_function(z, real_eval=True)
@@ -445,13 +510,27 @@ class DesignOptimizer:
             if obj == min(self.y_history): self.best_bbox = bbox
             if (i+1) % 10 == 0: logger.info(f"  Stage 1: {i+1}/100 (Best: {min(self.y_history):.4f})")
 
-        # Stage 2: Fix 3 — BO directly in 2D (h, r) physical space.
-        # FEM only uses (h, r); the 16-D latent space adds no information here.
-        logger.info("Entering Stage 2: Physical BO in (h, r) space...")
         cfg = self.sim_cfg
         w_s = cfg.get("w_stress",     1.0)
         w_c = cfg.get("w_compliance", 0.1)
         w_m = cfg.get("w_mass",       0.01)
+
+        if voxel_evaluator is not None:
+            # Stage 2: latent-space BO with direct CalculiX voxel FEM.
+            logger.info("Entering Stage 2: Voxel FEM BO in latent space...")
+            best_obj = min(self.y_history) if self.y_history else float("inf")
+            best_z_s2 = self.x_history[int(np.argmin(self.y_history))] if self.y_history else np.zeros(self.latent_dim)
+            for iteration in range(n_iterations):
+                z_cand, obj_cand = self.optimize_step_voxel_fem(voxel_evaluator)
+                if obj_cand < best_obj:
+                    best_obj  = obj_cand
+                    best_z_s2 = z_cand
+                    logger.info(f"New global best (Iter {iteration+1}): {best_obj:.4f}")
+            logger.info(f"Voxel FEM optimization complete! Best obj: {best_obj:.4f}")
+            return best_z_s2, best_obj
+
+        # Stage 2 (default): BO in physical (h, r) space via FreeCAD bridge.
+        logger.info("Entering Stage 2: Physical BO in (h, r) space...")
 
         # Seed best_obj from all successful FEM runs already collected.
         if self.fem_evaluator.evaluation_history:
@@ -468,18 +547,16 @@ class DesignOptimizer:
         for iteration in range(n_iterations):
             params, obj_cand = self.optimize_step_physical()
             if obj_cand < best_obj:
-                best_obj   = obj_cand
+                best_obj    = obj_cand
                 best_params = params
                 logger.info(
                     f"New global best (Iter {iteration+1}): {best_obj:.4f}  "
                     f"h={params['h_mm']:.2f}  r={params['r_mm']:.2f}"
                 )
 
-        logger.info(f"Optimization complete!")
-        logger.info(f"Best design objective: {best_obj:.4f}")
+        logger.info(f"Optimization complete! Best obj: {best_obj:.4f}")
         logger.info(f"Best parameters: h={best_params['h_mm']:.2f}mm  r={best_params['r_mm']:.2f}mm")
 
-        # Return the best latent z from Stage 1 history (for STL export compat).
         stage1_best_idx = int(np.argmin(self.y_history[:100])) if len(self.y_history) >= 100 else int(np.argmin(self.y_history))
         best_z = self.x_history[stage1_best_idx]
         return best_z, best_obj
@@ -549,6 +626,8 @@ if __name__ == "__main__":
     parser.add_argument("--latent-dim", type=int, default=16)
     parser.add_argument("--output-dir", type=str, default="./optimization_results")
     parser.add_argument("--n-iterations", type=int, default=900)
+    parser.add_argument("--voxel-fem", action="store_true",
+                        help="Use direct CalculiX voxel FEM (bypasses FreeCAD bridge) in Stage 2")
     args = parser.parse_args()
     from vae_design_model import DesignVAE
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -558,5 +637,17 @@ if __name__ == "__main__":
     vae = vae.to(device)
     fem_eval = BridgeEvaluator(output_dir=args.output_dir)
     optimizer = DesignOptimizer(vae, fem_eval, device=device, latent_dim=args.latent_dim)
-    best_z, best_obj = optimizer.run_optimization(n_iterations=args.n_iterations)
+
+    voxel_eval = None
+    if args.voxel_fem:
+        from voxel_fem import VoxelFEMEvaluator
+        voxel_eval = VoxelFEMEvaluator(
+            output_dir=str(Path(args.output_dir) / "voxel_fem"),
+        )
+        logger.info("Voxel FEM mode enabled — Stage 2 will use direct CalculiX hex mesh.")
+
+    best_z, best_obj = optimizer.run_optimization(
+        n_iterations=args.n_iterations,
+        voxel_evaluator=voxel_eval,
+    )
     optimizer.save_results(args.output_dir)
