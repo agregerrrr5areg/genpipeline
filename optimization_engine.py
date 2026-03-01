@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Tuple, List, Dict
 import logging
 import json
+import concurrent.futures
 
 import freecad_bridge
 from blackwell_compat import botorch_device
@@ -16,16 +17,17 @@ try:
     from botorch.fit import fit_gpytorch_mll
     from gpytorch.mlls import ExactMarginalLogLikelihood
     from botorch.optim import optimize_acqf
-    from botorch.acquisition import UpperConfidenceBound, ExpectedImprovement
+    from botorch.acquisition.multi_objective import qExpectedHypervolumeImprovement
+    from botorch.utils.multi_objective.pareto import is_non_dominated
     BOTORCH_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     BOTORCH_AVAILABLE = False
-    logger.warning("BoTorch not available. Install via: pip install botorch")
+    logger.warning(f"BoTorch not available: {e}. Multi-objective discovery will fallback to random search.")
 
 
 class BridgeEvaluator:
     """Evaluates designs using the FreeCAD bridge (WSL2 -> Windows)."""
-    def __init__(self, freecad_path: str = None, output_dir: str = "./optimization_results/fem"):
+    def __init__(self, freecad_path: str = None, output_dir: str = "./optimization_results/fem", n_workers: int = 4):
         try:
             self.freecad_cmd = freecad_bridge.find_freecad_cmd(freecad_path)
         except Exception as e:
@@ -36,175 +38,84 @@ class BridgeEvaluator:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.variant_win = freecad_bridge.deploy_variant_script()
         self.evaluation_history = []
+        self.n_workers = n_workers
 
-    def evaluate(self, parameters: Dict[str, float]) -> Dict[str, float]:
+    def evaluate_batch(self, parameter_list: List[Dict[str, float]]) -> List[Dict[str, float]]:
+        """Evaluates multiple designs in parallel via the FreeCAD bridge."""
         if not self.freecad_cmd:
-            logger.error("FreeCAD command not found. Returning dummy results.")
-            return {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
+            return [{"stress": 1e6, "compliance": 1e6, "mass": 1.0}] * len(parameter_list)
 
-        h_mm = float(parameters.get("h_mm", 10.0))
-        r_mm = float(parameters.get("r_mm", 3.0))
-        geom = parameters.get("geometry", "cantilever")
-
-        # Pre-check: hole radius must leave enough wall thickness.
-        # r >= h/2 means the cylinder exits the beam face → degenerate geometry.
-        if r_mm > 0.5 and r_mm >= h_mm * 0.45:
-            logger.warning(f"Skipping FEM (degenerate geometry): h={h_mm:.2f} r={r_mm:.2f}, r/h={r_mm/h_mm:.2f}")
-            penalty_res = {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
-            self.evaluation_history.append({"parameters": parameters, "results": penalty_res})
-            return penalty_res
-
-        # Fix 2: holes with r < 2 mm have fewer than ~12 elements around their
-        # circumference with the 1 mm mesh floor (2πr/1mm ≈ 4–12 elements).
-        # Below that threshold Gmsh produces degenerate elements → CalculiX
-        # returns null results.  Treat as solid beam instead.
-        if 0.5 < r_mm < 2.0:
-            logger.info(f"Small hole r={r_mm:.2f}mm → treating as solid (mesh too coarse to resolve hole)")
-            r_mm = 0.0
-
-        logger.info(f"Running FEM evaluation: {geom} h={h_mm:.2f} r={r_mm:.2f}")
+        results_out = [None] * len(parameter_list)
         
-        result = freecad_bridge.run_variant(
-            self.freecad_cmd, h_mm, r_mm, str(self.output_dir), 
-            self.variant_win, geometry=geom
-        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+            future_to_idx = {}
+            for idx, params in enumerate(parameter_list):
+                h_mm = float(params.get("h_mm", 10.0))
+                rr_mm = float(params.get("r_mm", 0.0))
+                geom = params.get("geometry", "cantilever")
+                
+                # Realistic Dimension Guard (5mm thickness)
+                if geom == "cantilever" and h_mm - (2 * rr_mm) < 4.9:
+                    results_out[idx] = {"stress": 1e6, "compliance": 1e6, "mass": 1.0, "parameters": params}
+                    continue
 
-        if result:
-            stress = float(result.get("stress_max", 0.0))
-            compliance = float(result.get("compliance", 0.0))
-            
-            # If stress is 0, the simulation likely failed to produce results
-            if stress < 1e-6 or compliance < 1e-9:
-                logger.warning(f"Simulation returned null results for {geom}. Applying penalty.")
-                penalty_res = {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
-                self.evaluation_history.append({"parameters": parameters, "results": penalty_res})
-                return penalty_res
+                future = executor.submit(
+                    freecad_bridge.run_variant,
+                    self.freecad_cmd, h_mm, rr_mm, str(self.output_dir), 
+                    self.variant_win, geometry=geom, material_cfg=params.get("material_cfg")
+                )
+                future_to_idx[future] = idx
 
-            # Map result keys to the expected internal format
-            eval_res = {
-                "stress": stress,
-                "compliance": compliance,
-                "mass": float(result.get("mass", 1.0)),
-                "bbox": result.get("bbox")
-            }
-            self.evaluation_history.append({
-                "parameters": parameters,
-                "results": eval_res
-            })
-            return eval_res
-        else:
-            logger.error("FEM simulation failed. Returning penalty.")
-            penalty_res = {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
-            self.evaluation_history.append({"parameters": parameters, "results": penalty_res})
-            return penalty_res
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    res = future.result()
+                    if res:
+                        eval_res = {
+                            "stress": float(res.get("stress_max", 1e6)),
+                            "compliance": float(res.get("compliance", 1e6)),
+                            "mass": float(res.get("mass", 1.0)),
+                            "bbox": res.get("bbox"),
+                            "parameters": parameter_list[idx]
+                        }
+                        results_out[idx] = eval_res
+                        self.evaluation_history.append(eval_res)
+                    else:
+                        results_out[idx] = {"stress": 1e6, "compliance": 1e6, "mass": 1.0, "parameters": parameter_list[idx]}
+                except Exception as e:
+                    logger.error(f"Batch evaluation failed for index {idx}: {e}")
+                    results_out[idx] = {"stress": 1e6, "compliance": 1e6, "mass": 1.0, "parameters": parameter_list[idx]}
+
+        return results_out
 
     def save_history(self, path: str):
         with open(path, 'w') as f:
             json.dump(self.evaluation_history, f, indent=2)
-        logger.info(f"Evaluation history saved to {path}")
-
-
-class PerformancePredictor:
-    def __init__(self, vae_model, device='cuda'):
-        self.vae = vae_model
-        self.device = device
-        self.vae.eval()
-
-    def predict(self, z: np.ndarray) -> np.ndarray:
-        with torch.no_grad():
-            z_tensor = torch.from_numpy(z).float().to(self.device)
-            if z_tensor.dim() == 1:
-                z_tensor = z_tensor.unsqueeze(0)
-            perf = self.vae.predict_performance(z_tensor)
-        return perf.cpu().numpy()
 
 
 class DesignOptimizer:
-    def __init__(self, vae_model, fem_evaluator, device='cuda', latent_dim=16, max_iterations=100, parallel_evaluations=4, sim_cfg=None):
+    def __init__(self, vae_model, fem_evaluator, device='cuda', latent_dim=32, sim_cfg=None):
         self.vae = vae_model
         self.fem_evaluator = fem_evaluator
         self.device = device
         self.latent_dim = latent_dim
-        self.max_iterations = max_iterations
-        self.parallel_evaluations = parallel_evaluations
-        self.sim_cfg = sim_cfg or {
-            "w_stress": 1.0, "w_compliance": 0.1, "w_mass": 0.01,
-            "max_stress_mpa": 1e9, "max_disp_mm": 1e9,
-        }
+        self.sim_cfg = sim_cfg or {"w_stress": 1.0, "w_compliance": 0.1, "w_mass": 0.01}
         self.vae.eval()
 
-        self.predictor = PerformancePredictor(vae_model, device)
         self.gp_model = None
-        self.train_x = None
-        self.train_y = None
-
         self.x_history = []
+        # Multi-objective history: [[stress, mass], ...]
         self.y_history = []
         self.best_bbox = None
-
-    def seed_from_dataset(self, train_loader, n_seeds=10):
-        """Seeds the optimizer with the best points from the existing dataset."""
-        logger.info(f"Seeding optimizer with {n_seeds} points from dataset...")
-        seeds = []
-        
-        self.vae.eval()
-        with torch.no_grad():
-            for batch in train_loader:
-                geom = batch['geometry'].to(self.device)
-                mu, _ = self.vae.encode(geom)
-                
-                # Get objective values for these existing points
-                for i in range(len(mu)):
-                    z = mu[i].cpu().numpy()
-                    obj, bbox = self.objective_function(z, real_eval=True)
-                    seeds.append((z, obj, bbox))
-                
-                if len(seeds) >= 100: break # Don't seed too many
-        
-        # Sort by objective and take top N
-        seeds.sort(key=lambda x: x[1])
-        for i in range(min(n_seeds, len(seeds))):
-            z, obj, bbox = seeds[i]
-            self.x_history.append(z)
-            self.y_history.append(obj)
-            if obj == min(self.y_history):
-                self.best_bbox = bbox
-            logger.info(f"Seed point {i+1}: obj={obj:.4f}")
-
-    def decode_latent_to_geometry(self, z: np.ndarray) -> np.ndarray:
-        """Decodes latent z with an Organic Density Filter."""
-        from scipy.ndimage import gaussian_filter
-        with torch.no_grad():
-            z_tensor = torch.from_numpy(z).float().to(self.device)
-            if z_tensor.dim() == 1:
-                z_tensor = z_tensor.unsqueeze(0)
-            geometry = self.vae.decode(z_tensor).cpu().numpy().squeeze()
-        
-        # Organic Density Filter: Smooth + Project
-        # This forces 'cool' organic transitions and removes pixelation
-        smooth_sigma = self.sim_cfg.get("constraints", {}).get("organic_smoothness", 0.5)
-        geometry = gaussian_filter(geometry, sigma=smooth_sigma)
-        
-        # Heaviside Projection (sharpening the edges)
-        geometry = 1.0 / (1.0 + np.exp(-15.0 * (geometry - 0.5)))
-        return geometry
-
-    def decode_to_mesh(self, z: np.ndarray, bbox: dict = None):
-        """Decode latent z → voxels → triangle mesh."""
-        from utils import VoxelConverter
-        voxels = self.decode_latent_to_geometry(z).squeeze()  # (D, H, W)
-        
-        mesh_data = VoxelConverter.voxel_to_mesh(voxels, bbox=bbox)
-        if mesh_data:
-            return mesh_data['vertices'], mesh_data['faces']
-        return np.array([]), np.array([])
 
     def geometry_to_parameters(self, z: np.ndarray) -> Dict[str, float]:
         with torch.no_grad():
             z_tensor = torch.from_numpy(z).float().to(self.device)
             if z_tensor.dim() == 1:
                 z_tensor = z_tensor.unsqueeze(0)
-            params = self.vae.predict_parameters(z_tensor).cpu().numpy()[0]
+            # Use specific head for latent vector input
+            params = self.vae.predict_parameters(z_tensor)
+            params = params.cpu().numpy()[0]
         
         return {
             "h_mm": float(params[0]),
@@ -212,442 +123,141 @@ class DesignOptimizer:
             "geometry": self.sim_cfg.get("geometry_type", "cantilever")
         }
 
-    def objective_function(self, z: np.ndarray, real_eval=False) -> Tuple[float, dict | None]:
-        from utils import GeometryMetrics
+    def optimize_step_parallel(self, q=4):
+        """MOBO Step: Explore the Pareto Front of Stress vs Mass for Plastic."""
+        # Focus exclusively on Plastic
+        with open("materials.json", "r") as f:
+            self.materials_db = json.load(f)
+        self.material_names = ["Plastic_ABS"] # Hardcoded to plastic
+        n_mats = len(self.material_names)
+
+        if not BOTORCH_AVAILABLE or len(self.x_history) < 10:
+            # Seed with Latent points only (material is fixed)
+            z_batch = np.random.randn(q, self.latent_dim) * 2.0
+            return self._evaluate_latent_batch(z_batch)
+
+        # Fit multi-output GP on CPU (Search space is back to latent_dim only)
+        train_X = torch.tensor(np.array(self.x_history), dtype=torch.float64).to(botorch_device)
+        train_Y = torch.tensor(np.array(self.y_history), dtype=torch.float64).to(botorch_device)
         
-        z = z.reshape(1, -1) if z.ndim == 1 else z
-        cfg   = self.sim_cfg
-        constraints = cfg.get("constraints", {})
-        
-        # 1. Decode with Organic Filter
-        geometry = self.decode_latent_to_geometry(z[0])
-        
-        # 2. Physicality Invariants (Check before simulation)
-        vol_fraction = (geometry > 0.5).mean()
-        n_components = GeometryMetrics.compute_connectivity(geometry)
-        
-        # INVARIANT: Design must be connected and non-empty
-        min_vol = constraints.get("min_volume_fraction", 0.15)
-        if vol_fraction < 0.01: # Absolute minimum
-            return 3e6, None
-            
-        vol_penalty = max(0, min_vol - vol_fraction) * 1e6
-        conn_penalty = (n_components - 1) * 1e4 if n_components > 1 else 0.0
+        train_Y_std = (train_Y - train_Y.mean(dim=0)) / (train_Y.std(dim=0) + 1e-6)
+        train_Y_std = -train_Y_std
 
-        # 3. Strength & Performance
-        w_s   = cfg.get("w_stress", 1.0)
-        w_c   = cfg.get("w_compliance", 0.5) 
-        w_m   = cfg.get("w_mass", 0.01)
-        max_s = cfg.get("max_stress_mpa", 1e9)
-
-        if real_eval:
-            params = self.geometry_to_parameters(z[0])
-            results = self.fem_evaluator.evaluate(params)
-
-            stress     = results["stress"]
-            compliance = results["compliance"]
-            mass       = results.get("mass", 0.0)
-            bbox       = results.get("bbox")
-            
-            stress_limit = cfg.get("yield_mpa", max_s)
-            stress_penalty = 5e5 if stress > stress_limit else 0.0
-
-            # vol/conn penalties intentionally excluded: FEM uses (h,r) from
-            # parameter_head, not the voxel. Penalising voxel connectivity hides
-            # good FEM results behind irrelevant structural checks.
-            val = (w_s * stress + w_c * compliance + w_m * mass + stress_penalty)
-            return val, bbox
-
-        else:
-            perf_pred       = self.predictor.predict(z)
-            stress_pred     = float(perf_pred[0, 0])
-            compliance_pred = float(perf_pred[0, 1])
-            stress_penalty  = 5e5 if stress_pred > max_s else 0.0
-
-            val = (w_s * stress_pred + w_c * compliance_pred + stress_penalty + vol_penalty + conn_penalty)
-            return val, None
-
-    def initialize_search(self, n_init_points=5):
-        if n_init_points > 0:
-            logger.info(f"Initializing Bayesian optimization with {n_init_points} points...")
-            for i in range(n_init_points):
-                z = np.random.randn(1, self.latent_dim) * 0.5
-                z = np.clip(z, -3, 3)
-                obj_value, bbox = self.objective_function(z[0], real_eval=True)
-                self.x_history.append(z[0])
-                self.y_history.append(obj_value)
-                if obj_value == min(self.y_history):
-                    self.best_bbox = bbox
-
-        self.train_x = torch.from_numpy(np.array(self.x_history)).double().to(botorch_device)
-        self.train_y = torch.from_numpy(np.array(self.y_history)).double().to(botorch_device).unsqueeze(-1)
-
-        if BOTORCH_AVAILABLE:
-            self.gp_model = SingleTaskGP(self.train_x, self.train_y)
-            mll = ExactMarginalLogLikelihood(self.gp_model.likelihood, self.gp_model)
-            fit_gpytorch_mll(mll)
-
-    def optimize_step(self, n_candidates=20):
-        if not BOTORCH_AVAILABLE:
-            return self._random_search_step(n_candidates)
-
-        acq_func = UpperConfidenceBound(self.gp_model, beta=0.1)
-        bounds = torch.tensor([[-3.0] * self.latent_dim, [3.0] * self.latent_dim], 
-                               dtype=torch.float64).to(botorch_device)
-
-        candidates, _ = optimize_acqf(
-            acq_func,
-            bounds=bounds,
-            q=1,
-            num_restarts=10,
-            raw_samples=512,
-        )
-
-        best_candidate = candidates[0].numpy()
-        obj_value, bbox = self.objective_function(best_candidate, real_eval=True)
-
-        self.x_history.append(best_candidate)
-        self.y_history.append(obj_value)
-        if obj_value == min(self.y_history):
-            self.best_bbox = bbox
-
-        self.train_x = torch.from_numpy(np.array(self.x_history)).double().to(botorch_device)
-        self.train_y = torch.from_numpy(np.array(self.y_history)).double().to(botorch_device).unsqueeze(-1)
-
-        self.gp_model = SingleTaskGP(self.train_x, self.train_y)
+        self.gp_model = SingleTaskGP(train_X, train_Y_std)
         mll = ExactMarginalLogLikelihood(self.gp_model.likelihood, self.gp_model)
         fit_gpytorch_mll(mll)
 
-        return best_candidate, obj_value
+        ref_point = train_Y_std.min(dim=0).values - 0.1
+        acq = qExpectedHypervolumeImprovement(
+            model=self.gp_model,
+            ref_point=ref_point,
+        )
+        
+        # Bounds: Latent (-3 to 3) only
+        bounds = torch.tensor([[-3.0] * self.latent_dim, 
+                                [3.0] * self.latent_dim], 
+                               dtype=torch.float64).to(botorch_device)
 
-    def optimize_step_physical(self):
-        """Fix 3: BO directly in 2D (h_mm, r_mm) physical space.
+        candidates, _ = optimize_acqf(
+            acq, bounds=bounds, q=q, num_restarts=10, raw_samples=512,
+        )
 
-        Bypasses the 16D latent space entirely.  The GP fits on actual FEM
-        evaluations normalised to [0, 1].  FEM only uses (h, r) — there is no
-        reason to search a 16-dimensional latent space.
+        return self._evaluate_latent_batch(candidates.cpu().numpy())
 
-        Returns (params_dict, objective_float).
-        """
-        cfg = self.sim_cfg
-        w_s = cfg.get("w_stress",     1.0)
-        w_c = cfg.get("w_compliance", 0.1)
-        w_m = cfg.get("w_mass",       0.01)
-        geom = cfg.get("geometry_type", "cantilever")
+    def _evaluate_latent_batch(self, z_batch):
+        # z_batch contains [z_0...z_31]
+        param_list = [self.geometry_to_parameters(z) for z in z_batch]
+        
+        for i, p in enumerate(param_list):
+            # Clamp geometry
+            p["h_mm"] = max(p["h_mm"], 5.0)
+            r_max = (p["h_mm"] - 5.0) / 2.0
+            p["r_mm"] = max(0.0, min(p["r_mm"], r_max))
+            
+            # Use Plastic exclusively
+            mat_name = "Plastic_ABS"
+            p["material_name"] = mat_name
+            p["material_cfg"] = self.materials_db[mat_name]
 
-        # Per-geometry parameter bounds.  Both params are normalised to [0,1]
-        # for the GP; the keys map to the dict keys run_fem_variant.py expects.
-        GEOM_SPACES = {
-            "cantilever": dict(mins=[5.0, 0.0],  maxs=[20.0,  5.0]),
-            "tapered":    dict(mins=[8.0, 2.0],  maxs=[25.0,  7.0]),
-            "ribbed":     dict(mins=[6.0, 2.0],  maxs=[20.0,  6.0]),
-            "lbracket":   dict(mins=[8.0, 5.0],  maxs=[25.0, 20.0]),
-        }
-        space = GEOM_SPACES.get(geom, GEOM_SPACES["cantilever"])
-        H_MIN, H_MAX = space["mins"][0], space["maxs"][0]
-        R_MIN, R_MAX = space["mins"][1], space["maxs"][1]
+        results = self.fem_evaluator.evaluate_batch(param_list)
+        
+        for i, res in enumerate(results):
+            self.x_history.append(z_batch[i])
+            self.y_history.append([res["stress"], res["mass"]])
+            
+            # Incorporate Targets and Weights
+            stress_limit = self.sim_cfg.get("max_stress_mpa", 1e9)
+            penalty = 5e5 if res["stress"] > stress_limit else 0.0
+            
+            obj = (self.sim_cfg["w_stress"] * res["stress"] + 
+                   self.sim_cfg["w_mass"] * res["mass"] + 
+                   penalty)
+            
+            if obj == min([ (self.sim_cfg["w_stress"] * y[0] + self.sim_cfg["w_mass"] * y[1] + (5e5 if y[0] > stress_limit else 0.0)) for y in self.y_history]):
+                self.best_bbox = res.get("bbox")
+                logger.info(f"  New Safe Best: Stress={res['stress']:.1f}MPa (Target: {stress_limit}), Mass={res['mass']:.3f}kg")
 
-        # Gather clean (h, r, obj) from every successful FEM run so far.
-        pts = []
-        for entry in self.fem_evaluator.evaluation_history:
-            p  = entry["parameters"]
-            rs = entry["results"]
-            h   = float(p.get("h_mm", 10.0))
-            rr  = float(p.get("r_mm",  0.0))
-            stress = float(rs.get("stress",     1e6))
-            comp   = float(rs.get("compliance", 1e6))
-            mass   = float(rs.get("mass",       1.0))
-            obj    = w_s * stress + w_c * comp + w_m * mass
-            pts.append((h, rr, obj))
+        return z_batch, results
 
-        if len(pts) < 2 or not BOTORCH_AVAILABLE:
-            # Too few points for a GP → random draw in physical space.
-            h  = float(np.random.uniform(H_MIN, H_MAX))
-            rr = float(np.random.uniform(R_MIN, R_MAX))
-        else:
-            # Normalise to [0, 1] so GP length-scale priors are meaningful.
-            train_X = torch.tensor(
-                [[(h  - H_MIN) / (H_MAX - H_MIN),
-                  (rr - R_MIN) / (R_MAX - R_MIN)]
-                 for h, rr, _ in pts],
-                dtype=torch.float64,
-            ).to(botorch_device)
-            # Negate: BoTorch maximises, we minimise objective.
-            train_Y = torch.tensor(
-                [[-obj] for _, _, obj in pts],
-                dtype=torch.float64,
-            ).to(botorch_device)
-
-            gp  = SingleTaskGP(train_X, train_Y)
-            mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
-            fit_gpytorch_mll(mll)
-
-            acq    = UpperConfidenceBound(gp, beta=0.1)
-            bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]],
-                                   dtype=torch.float64).to(botorch_device)
-            cand, _ = optimize_acqf(
-                acq, bounds=bounds, q=1, num_restarts=10, raw_samples=512,
-            )
-            h  = float(cand[0, 0]) * (H_MAX - H_MIN) + H_MIN
-            rr = float(cand[0, 1]) * (R_MAX - R_MIN) + R_MIN
-
-        params = {"h_mm": h, "r_mm": rr, "geometry": geom}
-        result = self.fem_evaluator.evaluate(params)
-        stress = float(result.get("stress",     1e6))
-        comp   = float(result.get("compliance", 1e6))
-        mass   = float(result.get("mass",       1.0))
-        obj    = w_s * stress + w_c * comp + w_m * mass
-
-        # Keep x/y history in sync for save_results compatibility.
-        # Use zeros as a placeholder latent vector for Stage-2 physical evals.
-        self.x_history.append(np.zeros(self.latent_dim))
-        self.y_history.append(obj)
-        if obj < min(self.y_history[:-1], default=float("inf")):
-            logger.info(f"  Physical BO new best: obj={obj:.2f}  h={h:.2f}  r={rr:.2f}")
-
-        return params, obj
-
-    def optimize_step_voxel_fem(self, voxel_evaluator) -> tuple:
-        """Stage-2 BO step using direct CalculiX voxel FEM in latent space.
-
-        Uses the same UCB/GP machinery as optimize_step() but calls
-        VoxelFEMEvaluator.evaluate(z, vae) instead of the FreeCAD bridge.
-        """
-        cfg = self.sim_cfg
-        w_s = cfg.get("w_stress",     1.0)
-        w_c = cfg.get("w_compliance", 0.1)
-        w_m = cfg.get("w_mass",       0.01)
-
-        if len(self.x_history) < 2 or not BOTORCH_AVAILABLE:
-            z = np.random.randn(self.latent_dim) * 0.5
-            z = np.clip(z, -3.0, 3.0)
-        else:
-            train_X = torch.from_numpy(np.array(self.x_history)).double().to(botorch_device)
-            train_Y = (torch.from_numpy(np.array(self.y_history)).double()
-                       .to(botorch_device).unsqueeze(-1) * -1.0)
-            gp  = SingleTaskGP(train_X, train_Y)
-            mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
-            fit_gpytorch_mll(mll)
-            acq    = UpperConfidenceBound(gp, beta=0.1)
-            bounds = torch.tensor(
-                [[-3.0] * self.latent_dim, [3.0] * self.latent_dim],
-                dtype=torch.float64,
-            ).to(botorch_device)
-            cand, _ = optimize_acqf(
-                acq, bounds=bounds, q=1, num_restarts=10, raw_samples=512,
-            )
-            z = cand[0].cpu().numpy()
-
-        result = voxel_evaluator.evaluate(z, self.vae, self.best_bbox)
-        stress     = float(result.get("stress",     1e6))
-        compliance = float(result.get("compliance", 1e6))
-        mass       = float(result.get("mass",       1.0))
-        obj = w_s * stress + w_c * compliance + w_m * mass
-
-        self.x_history.append(z)
-        self.y_history.append(obj)
-        if obj < min(self.y_history[:-1], default=float("inf")):
-            logger.info(f"  Voxel FEM new best: obj={obj:.2f}  stress={stress:.1f} MPa")
-
-        return z, obj
-
-    def _random_search_step(self, n_candidates=20):
-        best_obj = float('inf')
-        best_z = None
-        for _ in range(n_candidates):
-            z = np.random.randn(self.latent_dim) * 0.5
-            obj_value, bbox = self.objective_function(z, real_eval=True)
-            if obj_value < best_obj:
-                best_obj = obj_value
-                best_z = z
-                self.best_bbox = bbox
-        self.x_history.append(best_z)
-        self.y_history.append(best_obj)
-        return best_z, best_obj
-
-    def surrogate_gpu_sweep(self, n_samples=100000, top_k=100) -> List[np.ndarray]:
-        """Uses the GPU to screen designs and ensures we find valid physical starting points."""
-        logger.info(f"Performing Physicality-Guided GPU Sweep...")
-        cfg = self.sim_cfg
-        min_vol = cfg.get("constraints", {}).get("min_volume_fraction", 0.15)
-        valid_candidates = []
-        attempts = 0
-        while len(valid_candidates) < top_k and attempts < 20:
-            attempts += 1
-            with torch.no_grad():
-                z_batch = torch.randn(5000, self.latent_dim).to(self.device) * 1.5
-                preds = self.vae.predict_performance(z_batch)
-                w_s, w_c = cfg.get("w_stress", 1.0), cfg.get("w_compliance", 0.5)
-                obj_preds = w_s * preds[:, 0] + w_c * preds[:, 1]
-                _, sorted_idx = torch.sort(obj_preds)
-                for idx in sorted_idx:
-                    z = z_batch[idx].cpu().numpy()
-                    geom = self.decode_latent_to_geometry(z)
-                    vol = (geom > 0.5).mean()
-                    from utils import GeometryMetrics
-                    if vol >= min_vol and GeometryMetrics.compute_connectivity(geom) == 1:
-                        valid_candidates.append(z)
-                        if len(valid_candidates) >= top_k: break
-            if len(valid_candidates) < top_k:
-                logger.info(f"  Sweep attempt {attempts}: found {len(valid_candidates)}/{top_k}")
-        if not valid_candidates: valid_candidates = [np.zeros(self.latent_dim)]
-        return valid_candidates
-
-    def run_optimization(self, n_iterations=900, voxel_evaluator=None):
-        """Two-stage discovery.
-
-        Stage 1: GPU surrogate sweep (VAE performance predictor, no real FEM).
-        Stage 2: BO with real FEM.
-          - Default: physical-space BO in (h_mm, r_mm) via FreeCAD bridge.
-          - voxel_evaluator set: latent-space BO with direct CalculiX voxel FEM.
-        """
-        logger.info("Starting 1,000-Point Hybrid Discovery...")
-        gpu_candidates = self.surrogate_gpu_sweep(top_k=100)
-        for i, z in enumerate(gpu_candidates):
-            obj, bbox = self.objective_function(z, real_eval=True)
-            self.x_history.append(z)
-            self.y_history.append(obj)
-            if obj == min(self.y_history): self.best_bbox = bbox
-            if (i+1) % 10 == 0: logger.info(f"  Stage 1: {i+1}/100 (Best: {min(self.y_history):.4f})")
-
-        cfg = self.sim_cfg
-        w_s = cfg.get("w_stress",     1.0)
-        w_c = cfg.get("w_compliance", 0.1)
-        w_m = cfg.get("w_mass",       0.01)
-
-        if voxel_evaluator is not None:
-            # Stage 2: latent-space BO with direct CalculiX voxel FEM.
-            logger.info("Entering Stage 2: Voxel FEM BO in latent space...")
-            best_obj = min(self.y_history) if self.y_history else float("inf")
-            best_z_s2 = self.x_history[int(np.argmin(self.y_history))] if self.y_history else np.zeros(self.latent_dim)
-            for iteration in range(n_iterations):
-                z_cand, obj_cand = self.optimize_step_voxel_fem(voxel_evaluator)
-                if obj_cand < best_obj:
-                    best_obj  = obj_cand
-                    best_z_s2 = z_cand
-                    logger.info(f"New global best (Iter {iteration+1}): {best_obj:.4f}")
-            logger.info(f"Voxel FEM optimization complete! Best obj: {best_obj:.4f}")
-            return best_z_s2, best_obj
-
-        # Stage 2 (default): BO in physical (h, r) space via FreeCAD bridge.
-        logger.info("Entering Stage 2: Physical BO in (h, r) space...")
-
-        # Seed best_obj from all successful FEM runs already collected.
-        if self.fem_evaluator.evaluation_history:
-            best_obj = min(
-                w_s * e["results"]["stress"] +
-                w_c * e["results"]["compliance"] +
-                w_m * e["results"].get("mass", 1.0)
-                for e in self.fem_evaluator.evaluation_history
-            )
-        else:
-            best_obj = min(self.y_history)
-
-        best_params = {"h_mm": 10.0, "r_mm": 0.0}
-        for iteration in range(n_iterations):
-            params, obj_cand = self.optimize_step_physical()
-            if obj_cand < best_obj:
-                best_obj    = obj_cand
-                best_params = params
-                logger.info(
-                    f"New global best (Iter {iteration+1}): {best_obj:.4f}  "
-                    f"h={params['h_mm']:.2f}  r={params['r_mm']:.2f}"
-                )
-
-        logger.info(f"Optimization complete! Best obj: {best_obj:.4f}")
-        logger.info(f"Best parameters: h={best_params['h_mm']:.2f}mm  r={best_params['r_mm']:.2f}mm")
-
-        stage1_best_idx = int(np.argmin(self.y_history[:100])) if len(self.y_history) >= 100 else int(np.argmin(self.y_history))
-        best_z = self.x_history[stage1_best_idx]
-        return best_z, best_obj
+    def run_optimization(self, n_iterations=250, q=4):
+        logger.info(f"Starting Multi-Objective Parallel Discovery (q={q})...")
+        for i in range(n_iterations):
+            self.optimize_step_parallel(q=q)
+            logger.info(f"Round {i+1}/{n_iterations} complete. Pareto Designs Found: {is_non_dominated(-torch.tensor(self.y_history)).sum()}")
+        
+        # Find final Pareto Front
+        y_tensor = torch.tensor(self.y_history)
+        pareto_mask = is_non_dominated(-y_tensor) # negate because we minimize
+        best_z_idx = np.argmin([ (self.sim_cfg["w_stress"] * y[0] + self.sim_cfg["w_mass"] * y[1]) for y in self.y_history])
+        
+        return self.x_history[best_z_idx], self.y_history[best_z_idx]
 
     def save_results(self, output_dir: str = "./optimization_results"):
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        cfg = self.sim_cfg
-        w_s = cfg.get("w_stress",     1.0)
-        w_c = cfg.get("w_compliance", 0.1)
-        w_m = cfg.get("w_mass",       0.01)
-
-        # Find true best from clean FEM evaluations (physical-BO source of truth).
-        best_fem_entry = None
-        best_fem_obj   = float("inf")
-        for entry in self.fem_evaluator.evaluation_history:
-            rs  = entry["results"]
-            obj = (w_s * rs.get("stress", 1e6) +
-                   w_c * rs.get("compliance", 1e6) +
-                   w_m * rs.get("mass", 1.0))
-            if obj < best_fem_obj:
-                best_fem_obj   = obj
-                best_fem_entry = entry
-
-        # Fall back to y_history best for latent-z export.
-        y_np      = np.array(self.y_history)
-        valid_mask = y_np < 100000.0
-        best_idx   = int(np.where(valid_mask, y_np, np.inf).argmin()) if np.any(valid_mask) else int(np.argmin(y_np))
-        best_z     = self.x_history[best_idx]
-        best_obj   = float(best_fem_obj if best_fem_entry else y_np[best_idx])
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+        
+        y_tensor = torch.tensor(self.y_history)
+        pareto_mask = is_non_dominated(-y_tensor)
+        
+        pareto_indices = torch.where(pareto_mask)[0].tolist()
+        pareto_front = [
+            {
+                "stress": self.y_history[idx][0],
+                "mass": self.y_history[idx][1],
+                "params": self.fem_evaluator.evaluation_history[idx]["parameters"] if idx < len(self.fem_evaluator.evaluation_history) else {},
+                "latent_z": self.x_history[idx].tolist()
+            }
+            for idx in pareto_indices
+        ]
 
         results = {
-            "x_history":   [x.tolist() for x in self.x_history],
-            "y_history":   [float(y) for y in self.y_history],
-            "best_x":      best_z.tolist(),
-            "best_y":      best_obj,
-            "best_bbox":   self.best_bbox,
-            "best_params": best_fem_entry["parameters"] if best_fem_entry else {},
-            "best_fem":    best_fem_entry["results"]    if best_fem_entry else {},
+            "pareto_front": pareto_front,
+            "history_y": [list(y) for y in self.y_history],
+            "best_bbox": self.best_bbox
         }
-        with open(Path(output_dir) / "optimization_history.json", 'w') as f:
+        with open(out_path / "optimization_history.json", 'w') as f:
             json.dump(results, f, indent=2)
-        self.fem_evaluator.save_history(Path(output_dir) / "fem_evaluations.json")
-
-        if best_fem_entry:
-            p = best_fem_entry["parameters"]
-            r = best_fem_entry["results"]
-            logger.info(
-                f"Best FEM design: h={p.get('h_mm',0):.2f}mm  r={p.get('r_mm',0):.2f}mm  "
-                f"stress={r.get('stress',0):.1f} MPa  obj={best_fem_obj:.2f}"
-            )
-
-        try:
-            import trimesh
-            verts, faces = self.decode_to_mesh(best_z, bbox=self.best_bbox)
-            if len(faces) > 0:
-                mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
-                mesh.export(str(Path(output_dir) / "best_design.stl"))
-        except Exception as e:
-            logger.error(f"STL export failed: {e}")
-        return results
+        self.fem_evaluator.save_history(out_path / "fem_evaluations.json")
+        logger.info(f"MOBO Results Saved. {len(pareto_front)} Pareto-optimal designs identified.")
 
 
 if __name__ == "__main__":
     import argparse
+    from vae_design_model import DesignVAE
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-checkpoint", type=str, required=True)
-    parser.add_argument("--latent-dim", type=int, default=16)
-    parser.add_argument("--output-dir", type=str, default="./optimization_results")
-    parser.add_argument("--n-iterations", type=int, default=900)
-    parser.add_argument("--voxel-fem", action="store_true",
-                        help="Use direct CalculiX voxel FEM (bypasses FreeCAD bridge) in Stage 2")
+    parser.add_argument("--n-iter", type=int, default=250)
+    parser.add_argument("--q", type=int, default=4)
     args = parser.parse_args()
-    from vae_design_model import DesignVAE
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    vae = DesignVAE(input_shape=(64, 64, 64), latent_dim=32).to(device)
     checkpoint = torch.load(args.model_checkpoint, map_location=device, weights_only=False)
-    vae = DesignVAE(input_shape=(32, 32, 32), latent_dim=args.latent_dim)
     vae.load_state_dict(checkpoint['model_state_dict'])
-    vae = vae.to(device)
-    fem_eval = BridgeEvaluator(output_dir=args.output_dir)
-    optimizer = DesignOptimizer(vae, fem_eval, device=device, latent_dim=args.latent_dim)
-
-    voxel_eval = None
-    if args.voxel_fem:
-        from voxel_fem import VoxelFEMEvaluator
-        voxel_eval = VoxelFEMEvaluator(
-            output_dir=str(Path(args.output_dir) / "voxel_fem"),
-        )
-        logger.info("Voxel FEM mode enabled — Stage 2 will use direct CalculiX hex mesh.")
-
-    best_z, best_obj = optimizer.run_optimization(
-        n_iterations=args.n_iterations,
-        voxel_evaluator=voxel_eval,
-    )
-    optimizer.save_results(args.output_dir)
+    
+    evaluator = BridgeEvaluator(n_workers=args.q)
+    optimizer = DesignOptimizer(vae, evaluator, latent_dim=32)
+    
+    optimizer.run_optimization(n_iterations=args.n_iter, q=args.q)
+    optimizer.save_results()

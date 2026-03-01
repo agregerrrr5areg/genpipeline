@@ -257,9 +257,12 @@ class PerformanceNormalizer:
 
 
 class ManufacturabilityConstraints:
-    def __init__(self, min_feature_size: float = 1.0, max_overhang_angle: float = 45.0):
-        self.min_feature_size = min_feature_size
-        self.max_overhang_angle = max_overhang_angle
+    def __init__(self, min_feature_size: float = 1.0, max_overhang_angle: float = 45.0, config: dict = None):
+        self.config = config or {}
+        # If config provides specific material/manufacturing constraints, override defaults
+        mfg_cfg = self.config.get("manufacturing_constraints", {})
+        self.min_feature_size = mfg_cfg.get("min_feature_size_mm", min_feature_size)
+        self.max_overhang_angle = mfg_cfg.get("max_overhang_angle_deg", max_overhang_angle)
 
     def check_min_feature_size(self, voxel_grid: np.ndarray, voxel_size: float = 1.0) -> bool:
         min_physical_size = self.min_feature_size
@@ -290,15 +293,22 @@ class ManufacturabilityConstraints:
 
         return True
 
-    def apply_constraints(self, voxel_grid: np.ndarray) -> np.ndarray:
+    def apply_constraints(self, voxel_grid: np.ndarray, voxel_size: float = 1.0) -> np.ndarray:
         constrained = voxel_grid.copy()
 
-        if not self.check_min_feature_size(constrained):
-            logger.warning("Design violates minimum feature size")
-            constrained = VoxelConverter.remove_small_components(constrained, min_size=5)
+        # Conservative min volume: sphere with diameter = min_feature_size
+        # V = (4/3) * pi * (r^3)
+        radius_mm = self.min_feature_size / 2.0
+        min_vol_mm3 = (4.0/3.0) * np.pi * (radius_mm ** 3)
+        min_voxels = int(min_vol_mm3 / (voxel_size ** 3))
+
+        if not self.check_min_feature_size(constrained, voxel_size=voxel_size):
+            logger.warning(f"Design violates minimum feature size ({self.min_feature_size}mm)")
+            # Filter out components smaller than the minimal physical volume
+            constrained = VoxelConverter.remove_small_components(constrained, min_size=max(min_voxels, 1))
 
         if not self.check_overhang_constraint(constrained):
-            logger.warning("Design violates overhang constraint")
+            logger.warning(f"Design violates overhang constraint ({self.max_overhang_angle} deg)")
             constrained = self._fix_overhangs(constrained)
 
         return constrained

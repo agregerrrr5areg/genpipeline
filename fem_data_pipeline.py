@@ -25,7 +25,7 @@ class DesignSample:
 
 
 class VoxelGrid:
-    def __init__(self, resolution=32):
+    def __init__(self, resolution=64):
         self.resolution = resolution
         self.bounds = None
 
@@ -253,7 +253,7 @@ class DataPipeline:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.parser = FEMResultParser(str(self.output_dir))
-        self.voxelizer = VoxelGrid(resolution=32)
+        self.voxelizer = VoxelGrid(resolution=64)
 
     def process_all_designs(self):
         """Main pipeline: extract results → voxelize → create dataset"""
@@ -289,7 +289,7 @@ class DataPipeline:
 
         logger.info(f"Collected {len(samples)} samples")
 
-        dataset = FEMDataset(samples, voxel_resolution=32, use_sdf=False)
+        dataset = FEMDataset(samples, voxel_resolution=64, use_sdf=False)
 
         train_size = int(0.8 * len(dataset))
         val_size = len(dataset) - train_size

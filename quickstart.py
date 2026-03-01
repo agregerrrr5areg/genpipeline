@@ -2,16 +2,6 @@
 """
 FEMbyGEN + PyTorch Generative Design Pipeline - Quick Start Example
 ====================================================================
-
-This script demonstrates the complete workflow:
-1. Setup FreeCAD parametric model
-2. Extract FEM results
-3. Train generative model
-4. Optimize designs
-5. Export best design
-
-Author: Your Name
-Date: 2025
 """
 
 import argparse
@@ -30,15 +20,15 @@ class PipelineConfig:
         self.config = {
             'freecad_project_dir': './freecad_designs',
             'fem_data_output': './fem_data',
-            'voxel_resolution': 32,
+            'voxel_resolution': 64,
             'use_sdf': False,
-            'latent_dim': 16,
-            'batch_size': 8,
-            'epochs': 100,
-            'learning_rate': 1e-3,
-            'beta_vae': 1.0,
+            'latent_dim': 32,
+            'batch_size': 32,
+            'epochs': 300,
+            'learning_rate': 0.0003,
+            'beta_vae': 0.05,
             'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-            'n_optimization_iterations': 50,
+            'n_optimization_iterations': 1000,
             'output_dir': './optimization_results'
         }
 
@@ -65,382 +55,168 @@ class PipelineConfig:
 
 
 def step_1_setup_freecad(config: PipelineConfig):
-    """
-    Step 1: Prepare FreeCAD parametric model
-    ==========================================
-    
-    Manual steps in FreeCAD:
-    1. Create parametric model using Part Design
-    2. Define constraints with parameters (e.g., thickness, radius)
-    3. Set up FEM analysis with materials, loads, constraints
-    4. Save as master_design.FCStd
-    
-    Then use FEMbyGEN to generate variations:
-    1. Open FEMbyGEN workbench
-    2. Click "Initialize" to create Parameters spreadsheet
-    3. Define parameter ranges (min/max values)
-    4. Click "Generate" to create design variants
-    5. Click "FEA" and run simulations
-    """
     logger.info("=" * 60)
     logger.info("STEP 1: FreeCAD Setup (Manual)")
     logger.info("=" * 60)
-
-    instructions = """
-    1. In FreeCAD, create a parametric model:
-       - Use Part Design workbench
-       - Create sketch-based features (Pad, Pocket, etc.)
-       - Constrain dimensions with parameters
-    
-    2. Set up FEM Analysis:
-       - Switch to FEM workbench
-       - Create Analysis container
-       - Add loads, constraints, materials
-       - Create mesh (Gmsh or Netgen)
-    
-    3. Create parametric variants with FEMbyGEN:
-       - Install FEMbyGEN addon
-       - Switch to FEMbyGEN workbench
-       - Click "Initialize" button
-       - Define parameter ranges in spreadsheet
-       - Click "Generate" to create variations
-       - Click "FEA" to run simulations
-    
-    4. Save results directory with all .FCStd files
-    """
-    print(instructions)
-
     project_dir = Path(config['freecad_project_dir'])
     project_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Created project directory: {project_dir}")
 
 
 def step_2_extract_fem_data(config: PipelineConfig):
-    """
-    Step 2: Extract FEM results and voxelize geometries
-    """
     logger.info("=" * 60)
     logger.info("STEP 2: Extract FEM Data")
     logger.info("=" * 60)
-
     try:
         from fem_data_pipeline import DataPipeline
     except ImportError:
         logger.error("fem_data_pipeline.py not found")
         return None
-
     pipeline = DataPipeline(
         freecad_project_dir=config['freecad_project_dir'],
         output_dir=config['fem_data_output']
     )
-
-    try:
-        train_loader, val_loader, dataset = pipeline.process_all_designs()
-        logger.info(f"Processed {len(dataset)} designs")
-        logger.info(f"Train batch size: {len(train_loader)}, Val batch size: {len(val_loader)}")
-        return train_loader, val_loader, dataset
-    except Exception as e:
-        logger.error(f"Data extraction failed: {e}")
-        return None
+    return pipeline.process_all_designs()
 
 
 def step_3_train_vae(config: PipelineConfig, train_loader, val_loader):
-    """
-    Step 3: Train VAE generative model
-    """
     logger.info("=" * 60)
     logger.info("STEP 3: Train VAE Generative Model")
     logger.info("=" * 60)
-
     try:
         from vae_design_model import DesignVAE, VAETrainer
     except ImportError:
         logger.error("vae_design_model.py not found")
         return None
-
     device = config['device']
-    logger.info(f"Using device: {device}")
-
-    model = DesignVAE(
-        input_shape=(config['voxel_resolution'],) * 3,
-        latent_dim=config['latent_dim']
-    )
-
-    trainer = VAETrainer(
-        model,
-        train_loader,
-        val_loader,
-        device=device,
-        lr=config['learning_rate'],
-        beta=config['beta_vae']
-    )
-
-    logger.info("Starting VAE training...")
+    model = DesignVAE(input_shape=(64, 64, 64), latent_dim=config['latent_dim'])
+    trainer = VAETrainer(model, train_loader, val_loader, device=device, lr=config['learning_rate'], beta=config['beta_vae'])
     trainer.fit(epochs=config['epochs'])
-
-    logger.info(f"Training complete. Best model saved to checkpoints/vae_best.pth")
     return model
 
 
 def step_4_optimize_designs(config: PipelineConfig):
-    """
-    Step 4: Run Bayesian optimization to find optimal designs
-    """
     logger.info("=" * 60)
-    logger.info("STEP 4: Bayesian Design Optimization")
+    logger.info("STEP 4: Multi-Objective Bayesian Optimization")
     logger.info("=" * 60)
-
     try:
         from optimization_engine import DesignOptimizer, BridgeEvaluator
         from vae_design_model import DesignVAE
     except ImportError:
-        logger.error("optimization_engine.py or vae_design_model.py not found")
+        logger.error("Optimization modules not found")
         return None
 
     device = config['device']
-
     checkpoint = torch.load('checkpoints/vae_best.pth', map_location=device, weights_only=False)
-    vae = DesignVAE(
-        input_shape=(config['voxel_resolution'],) * 3,
-        latent_dim=config['latent_dim']
-    )
+    vae = DesignVAE(input_shape=(64, 64, 64), latent_dim=config['latent_dim'])
     vae.load_state_dict(checkpoint['model_state_dict'])
     vae = vae.to(device)
 
-    # Use BridgeEvaluator for WSL2 -> Windows communication
-    fem_evaluator = BridgeEvaluator(
-        freecad_path=config.config.get('freecad_path'),
-        output_dir=str(Path(config['output_dir']) / 'fem')
-    )
+    q = config.config.get('optimization', {}).get('parallel_evaluations', 4)
+    fem_evaluator = BridgeEvaluator(freecad_path=config.config.get('freecad_path'), output_dir=str(Path(config['output_dir']) / 'fem'), n_workers=q)
+    
+    optimizer = DesignOptimizer(vae, fem_evaluator, device=device, latent_dim=config['latent_dim'], 
+                                sim_cfg={'geometry_type': config.config.get('geometry_type', 'cantilever'),
+                                         'w_stress': config.config.get('performance_weights', {}).get('stress', 1.0),
+                                         'w_mass': config.config.get('performance_weights', {}).get('mass', 0.01),
+                                         'max_stress_mpa': config.config.get('performance_targets', {}).get('max_stress_mpa', 40.0)})
 
-    optimizer = DesignOptimizer(
-        vae,
-        fem_evaluator,
-        device=device,
-        latent_dim=config['latent_dim'],
-        sim_cfg={'geometry_type': config.config.get('geometry_type', 'cantilever')}
-    )
-
-    logger.info("Starting optimization...")
-    best_z, best_obj = optimizer.run_optimization(
-        n_iterations=config['n_optimization_iterations']
-    )
-
+    n_iter = max(1, config['n_optimization_iterations'] // q)
+    logger.info(f"Starting MOBO: {n_iter} rounds of {q} designs...")
+    best_z, best_y = optimizer.run_optimization(n_iterations=n_iter, q=q)
     optimizer.save_results(config['output_dir'])
-
-    logger.info(f"Optimization complete!")
-    logger.info(f"Best design objective: {best_obj:.4f}")
-    logger.info(f"Best latent vector: {best_z}")
-
-    return best_z, best_obj
+    
+    return best_z, best_y
 
 
-def step_5_export_design(config: PipelineConfig, best_z):
-    """
-    Step 5: Export optimized design
-    """
+def step_5_export_design(config: PipelineConfig, best_z=None):
     logger.info("=" * 60)
-    logger.info("STEP 5: Export Optimized Design")
+    logger.info("STEP 5: Export Pareto-Optimal Designs")
     logger.info("=" * 60)
-
     try:
         from vae_design_model import DesignVAE
         from utils import VoxelConverter, ManufacturabilityConstraints
     except ImportError:
-        logger.error("Required modules not found")
+        logger.error("Modules not found")
         return False
 
     device = config['device']
-
     checkpoint = torch.load('checkpoints/vae_best.pth', map_location=device, weights_only=False)
-    vae = DesignVAE(
-        input_shape=(config['voxel_resolution'],) * 3,
-        latent_dim=config['latent_dim']
-    )
+    vae = DesignVAE(input_shape=(64, 64, 64), latent_dim=config['latent_dim'])
     vae.load_state_dict(checkpoint['model_state_dict'])
     vae = vae.to(device)
 
-    with torch.no_grad():
-        z_tensor = torch.from_numpy(best_z).float().unsqueeze(0).to(device)
-        geometry = vae.decode(z_tensor)
-
-    voxel_grid = geometry.squeeze().cpu().numpy()
-
-    # Precision check: if the voxel grid is all zeros, Marching Cubes will fail.
-    # This can happen if the BO finds a "void" design that it thinks has 0 mass.
-    if np.max(voxel_grid) < 0.1:
-        logger.error("Best design is empty (all zeros). Skipping export.")
+    # Load Pareto Front from history
+    hist_path = Path(config['output_dir']) / "optimization_history.json"
+    if not hist_path.exists():
+        logger.error("No optimization history found. Run Step 4 first.")
         return False
-
-    mfg_constraints = ManufacturabilityConstraints()
-    voxel_grid = mfg_constraints.apply_constraints(voxel_grid)
+    
+    with open(hist_path, 'r') as f:
+        hist = json.load(f)
+    
+    pareto_front = hist.get("pareto_front", [])
+    if not pareto_front:
+        logger.warning("No Pareto front found. Exporting single best.")
+        designs_to_export = [{"name": "best_balanced", "z": best_z}] if best_z is not None else []
+    else:
+        # Find Strongest, Lightest, and Balanced
+        strongest = min(pareto_front, key=lambda x: x['stress'])
+        lightest  = min(pareto_front, key=lambda x: x['mass'])
+        balanced  = min(pareto_front, key=lambda x: (x['stress'] + 100 * x['mass']))
+        designs_to_export = [
+            {"name": "pareto_strongest", "z": strongest['latent_z']},
+            {"name": "pareto_lightest",  "z": lightest['latent_z']},
+            {"name": "pareto_balanced",  "z": balanced['latent_z']}
+        ]
 
     output_dir = Path(config['output_dir']) / 'exported_designs'
     output_dir.mkdir(parents=True, exist_ok=True)
+    mfg = ManufacturabilityConstraints(config=config.config)
+    res = config['voxel_resolution']
 
-    # Load best_bbox if available for scale preservation
-    best_bbox = None
-    hist_path = Path(config['output_dir']) / "optimization_history.json"
-    if hist_path.exists():
-        try:
-            with open(hist_path, 'r') as f:
-                hist = json.load(f)
-                best_bbox = hist.get("best_bbox")
-        except Exception as e:
-            logger.warning(f"Could not load best_bbox from history: {e}")
-
-    mesh_data = VoxelConverter.voxel_to_mesh(
-        voxel_grid,
-        voxel_size=1.0 / config['voxel_resolution'],
-        bbox=best_bbox
-    )
-
-    if mesh_data:
-        try:
+    for d in designs_to_export:
+        z = torch.tensor(d['z']).float().unsqueeze(0).to(device)
+        with torch.no_grad():
+            voxels = vae.decode(z).squeeze().cpu().numpy()
+        
+        voxels = mfg.apply_constraints(voxels, voxel_size=1.0/res)
+        if np.max(voxels) < 0.5: continue
+        
+        mesh = VoxelConverter.voxel_to_mesh(voxels, voxel_size=1.0/res, bbox=hist.get("best_bbox"))
+        if mesh:
             import trimesh
-            mesh = trimesh.Trimesh(
-                vertices=mesh_data['vertices'],
-                faces=mesh_data['faces']
-            )
-            output_path = output_dir / 'optimized_design.stl'
-            mesh.export(str(output_path))
-            logger.info(f"Exported STL: {output_path}")
+            m = trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces'])
+            m.export(str(output_dir / f"{d['name']}.stl"))
+            logger.info(f"Exported {d['name']}.stl")
 
-            output_path_obj = output_dir / 'optimized_design.obj'
-            mesh.export(str(output_path_obj))
-            logger.info(f"Exported OBJ: {output_path_obj}")
-
-            return True
-        except Exception as e:
-            logger.error(f"Export failed: {e}")
-            return False
-    else:
-        logger.error("Failed to generate mesh from voxels")
-        return False
-
-
-def run_full_pipeline(config: PipelineConfig):
-    """
-    Execute complete pipeline
-    """
-    logger.info("\n" + "=" * 60)
-    logger.info("FEMbyGEN + PyTorch Generative Design Pipeline")
-    logger.info("=" * 60 + "\n")
-
-    step_1_setup_freecad(config)
-    input("Press Enter after completing FreeCAD setup...")
-
-    data_result = step_2_extract_fem_data(config)
-    if data_result is None:
-        logger.error("Data extraction failed")
-        return False
-
-    train_loader, val_loader, dataset = data_result
-
-    model = step_3_train_vae(config, train_loader, val_loader)
-    if model is None:
-        logger.error("VAE training failed")
-        return False
-
-    opt_result = step_4_optimize_designs(config)
-    if opt_result is None:
-        logger.error("Optimization failed")
-        return False
-
-    best_z, best_obj = opt_result
-
-    success = step_5_export_design(config, best_z)
-
-    logger.info("\n" + "=" * 60)
-    logger.info("Pipeline Complete!")
-    logger.info("=" * 60)
-    logger.info(f"Results saved to: {config['output_dir']}")
-
-    return success
+    return True
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="FEMbyGEN + PyTorch Generative Design Pipeline",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python quickstart.py --step 1
-  python quickstart.py --config config.json
-  python quickstart.py --all
-        """
-    )
-
-    parser.add_argument('--step', type=int, choices=[1, 2, 3, 4, 5],
-                       help='Run specific pipeline step')
-    parser.add_argument('--config', type=str, default='pipeline_config.json',
-                       help='Config file path')
-    parser.add_argument('--all', action='store_true',
-                       help='Run complete pipeline')
-    parser.add_argument('--freecad-dir', type=str,
-                       help='FreeCAD project directory')
-    parser.add_argument('--output-dir', type=str,
-                       help='Output directory')
-    parser.add_argument('--epochs', type=int,
-                       help='Training epochs')
-    parser.add_argument('--n-iter', type=int,
-                       help='Optimization iterations')
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--step', type=int, choices=[1, 2, 3, 4, 5])
+    parser.add_argument('--all', action='store_true')
+    parser.add_argument('--n-iter', type=int)
     args = parser.parse_args()
 
-    config = PipelineConfig(args.config if Path(args.config).exists() else None)
-
-    if args.freecad_dir:
-        config['freecad_project_dir'] = args.freecad_dir
-    if args.output_dir:
-        config['output_dir'] = args.output_dir
-    if args.epochs:
-        config['epochs'] = args.epochs
-    if args.n_iter:
-        config['n_optimization_iterations'] = args.n_iter
-
-    config.save('pipeline_config.json')
+    config = PipelineConfig('pipeline_config.json')
+    if args.n_iter: config['n_optimization_iterations'] = args.n_iter
 
     if args.all:
-        run_full_pipeline(config)
-    elif args.step == 1:
         step_1_setup_freecad(config)
-    elif args.step == 2:
-        data_result = step_2_extract_fem_data(config)
+        data = step_2_extract_fem_data(config)
+        model = step_3_train_vae(config, data[0], data[1])
+        z, _ = step_4_optimize_designs(config)
+        step_5_export_design(config, z)
     elif args.step == 3:
-        # Load raw dataset and rebuild DataLoaders for Hyper-Speed
-        data_path = Path(config['fem_data_output']) / "fem_dataset.pt"
-        checkpoint = torch.load(data_path, weights_only=False)
-        
-        # Extract the underlying Dataset objects
-        train_ds = checkpoint['train_loader'].dataset
-        val_ds   = checkpoint['val_loader'].dataset
-        
-        # Optimize DataLoader for RTX 5080
+        checkpoint = torch.load(Path(config['fem_data_output']) / "fem_dataset.pt", weights_only=False)
         from torch.utils.data import DataLoader
-        train_loader = DataLoader(
-            train_ds, 
-            batch_size=128, 
-            shuffle=True, 
-            pin_memory=True, 
-            num_workers=4
-        )
-        val_loader = DataLoader(
-            val_ds, 
-            batch_size=128, 
-            shuffle=False, 
-            pin_memory=True, 
-            num_workers=4
-        )
-        
-        model = step_3_train_vae(config, train_loader, val_loader)
+        train_l = DataLoader(checkpoint['train_loader'].dataset, batch_size=config['batch_size'], shuffle=True, pin_memory=True, num_workers=4, persistent_workers=True)
+        val_l = DataLoader(checkpoint['val_loader'].dataset, batch_size=config['batch_size'], pin_memory=True, num_workers=4, persistent_workers=True)
+        step_3_train_vae(config, train_l, val_l)
     elif args.step == 4:
-        best_z, best_obj = step_4_optimize_designs(config)
-        np.save(Path(config['output_dir']) / 'best_z.npy', best_z)
+        best_z, _ = step_4_optimize_designs(config)
+        np.save('optimization_results/best_z.npy', best_z)
     elif args.step == 5:
-        import numpy as np
-        best_z = np.load('optimization_results/best_z.npy')
-        step_5_export_design(config, best_z)
-    else:
-        logger.info("Run with --all for complete pipeline or --step N for specific step")
-        parser.print_help()
+        z = np.load('optimization_results/best_z.npy') if Path('optimization_results/best_z.npy').exists() else None
+        step_5_export_design(config, z)

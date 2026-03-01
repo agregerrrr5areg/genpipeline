@@ -246,16 +246,41 @@ def deploy_variant_script() -> str:
 
 
 def run_variant(freecad_cmd: str, h_mm: float, r_mm: float,
-                output_wsl: str, variant_win: str, geometry: str = "cantilever") -> dict | None:
-    """Run one FEM variant (h_mm, r_mm) via FreeCADCmd. Returns parsed JSON or None."""
+                output_wsl: str, variant_win: str, geometry: str = "cantilever", material_cfg: dict = None) -> dict | None:
+    """Run one FEM variant via FreeCADCmd. Includes material properties if provided."""
     output_win  = wsl_to_windows(output_wsl)
 
+    # Per-geometry BC normals for run_fem_variant.py
+    _GEOM_BC = {
+        "cantilever": {"fixed_face_normal": [-1,0,0], "load_face_normal": [1,0,0], "force_direction": [0,0,-1]},
+        "tapered":    {"fixed_face_normal": [-1,0,0], "load_face_normal": [1,0,0], "force_direction": [0,0,-1]},
+        "ribbed":     {"fixed_face_normal": [-1,0,0], "load_face_normal": [1,0,0], "force_direction": [0,0,-1]},
+        "lbracket":   {"fixed_face_normal": [0,0,-1], "load_face_normal": [1,0,0], "force_direction": [0,0,-1]},
+    }
+
+    # Prepare config payload
+    from sim_config import SIM_PHYSICS
+    cfg_data = {
+        "h_mm": h_mm,
+        "r_mm": r_mm,
+        "output": output_win,
+        "geometry": geometry,
+    }
+    cfg_data.update(_GEOM_BC.get(geometry, _GEOM_BC["cantilever"]))
+    cfg_data.update(SIM_PHYSICS)
+    if material_cfg:
+        cfg_data.update(material_cfg)
+
+    # Use a unique ID to prevent collisions during parallel runs
+    import uuid
+    uid = str(uuid.uuid4())[:8]
+    stem = f"{geometry[:4]}_h{h_mm:.1f}_r{r_mm:.1f}_{uid}".replace(".", "p")
+    
     # FreeCAD 1.0 intercepts --flag style args; pass params via a config file.
-    stem       = f"{geometry[:4]}_h{h_mm:.1f}_r{r_mm:.1f}".replace(".", "p")
     cfg_wsl    = WIN_TEMP_WSL / f"fem_cfg_{stem}.cfg"
     cfg_win    = WIN_TEMP_WIN + f"\\fem_cfg_{stem}.cfg"
     with open(cfg_wsl, "w") as f:
-        json.dump({"h_mm": h_mm, "r_mm": r_mm, "output": output_win, "geometry": geometry}, f)
+        json.dump(cfg_data, f)
 
     # FreeCAD 1.0 (freecad.exe) needs --console for headless; 0.x FreeCADCmd.exe doesn't
     console_flag = ["--console"] if freecad_cmd.endswith("freecad.exe") else []
@@ -274,7 +299,6 @@ def run_variant(freecad_cmd: str, h_mm: float, r_mm: float,
         logger.error(f"FreeCAD exited {proc.returncode}:\n{proc.stderr[-500:]}")
         return None
 
-    stem = f"{geometry[:4]}_h{h_mm:.1f}_r{r_mm:.1f}".replace(".", "p")
     json_path = Path(output_wsl) / f"{stem}_fem_results.json"
     if not json_path.exists():
         logger.warning(f"No JSON at {json_path}")

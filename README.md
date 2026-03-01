@@ -1,133 +1,108 @@
-# GenPipeline — Generative Design via FEM + VAE + Bayesian Optimisation
+# GenPipeline
 
-A high-performance pipeline that combines **FreeCAD FEM simulation**, **3D Variational Autoencoders (VAE)**, and **Bayesian Optimisation** to autonomously discover structurally optimal and organic geometries.
-
----
-
-## 🚀 Current State: Fully Operational
-
-The pipeline has been upgraded from a scaffolding state to a high-precision discovery engine. The "Active Learning Loop" is closed, and the system is specifically tuned for **RTX 5080 (Blackwell)** hardware.
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| **Closed-Loop BO** | ✅ Active | BO now triggers real FreeCAD simulations via the WSL2 bridge. |
-| **Multi-Geometry BO** | ✅ Active | Cantilever, L-bracket, tapered beam, ribbed plate — each with correct BCs and per-geometry BO bounds. |
-| **Voxel FEM Path** | ✅ Active | Direct CalculiX C3D8 hex mesh from decoded voxels — bypasses FreeCAD entirely (`--voxel-fem`). |
-| **Organic Filtering**| ✅ Active | VAE decoding uses a Gaussian-Heaviside density filter for smooth, bone-like forms. |
-| **Scale Preservation**| ✅ Active | 10x50mm in FreeCAD remains exactly 10x50mm in the exported STL. |
-| **Hardware Speed** | ✅ Optimized | Batch size 128 + FP8 (uint8) storage + Pinned memory for RTX 5080. |
-| **Physicality Guard** | ✅ Enforced | Strict connectivity and volume fraction invariants prevent "void" designs. |
-| **Material Physics** | ✅ JSON-Driven | `materials.json` defines E, Poisson, Density, and Thermal Expansion. |
+Generative design pipeline combining FreeCAD FEM simulation, a 3D VAE, and Bayesian optimisation to discover structurally optimal geometries. Tuned for RTX 5080 (Blackwell/CUDA 12.8).
 
 ---
 
-## 🧠 Core Architecture
+## Status
+
+| Component | State | Notes |
+|-----------|-------|-------|
+| FEM data generation | Active | Cantilever, L-bracket, tapered, ribbed variants via FreeCAD bridge |
+| VAE training | Active | 3D conv VAE, 16-dim latent space, performance + parameter heads |
+| Bayesian optimisation | Active | Two-stage: GPU surrogate sweep then physical-space BO per geometry |
+| Voxel FEM path | Active | Direct CalculiX C3D8 hex mesh from decoded voxels (`--voxel-fem`) |
+| Blackwell workaround | Active | BoTorch GP runs on CPU; VAE/Conv on GPU |
+
+---
+
+## Architecture
 
 ```
-1. DATA GENERATION (freecad_bridge.py)
-   ↑ Parallel (ThreadPool) extraction of Parametric Variants (C3D10 Quadratic elements).
-   ↑ Supports 4 geometry types: cantilever, lbracket, tapered, ribbed.
-
-2. REPRESENTATION LEARNING (vae_design_model.py)
-   ↑ 3D Convolutional VAE learns latent "DNA" of structures.
-   ↑ Predictor heads learn to map latent vectors to Performance (Stress/Mass) and Parameters (h/r).
-
-3. ORGANIC DISCOVERY (optimization_engine.py)
-   ↑ BoTorch Gaussian Process explores the design space.
-   ↑ Stage 1: GPU surrogate sweep in 16-D latent space (VAE predictor).
-   ↑ Stage 2a (default): Physical BO in per-geometry (h, r) space via FreeCAD bridge.
-   ↑ Stage 2b (--voxel-fem): Latent-space BO with direct CalculiX hex mesh (no FreeCAD).
-
-4. ACCURATE EXPORT (utils.py)
-   ↑ Scale-preserved Marching Cubes using original FreeCAD BoundBox metadata.
+freecad_bridge.py      — parametric FEM variants via FreeCAD (WSL2 -> Windows)
+fem_data_pipeline.py   — voxelise STL + FEM metrics -> fem_dataset.pt
+vae_design_model.py    — 3D conv VAE: encode/decode + stress/param predictor heads
+optimization_engine.py — two-stage BO: latent sweep (Stage 1) + physical BO (Stage 2)
+voxel_fem.py           — direct CalculiX path: voxels -> C3D8 hex mesh -> .frd parser
+utils.py               — voxel/mesh helpers, geometry metrics
+quickstart.py          — orchestrates all pipeline steps
+blackwell_compat.py    — device routing (BoTorch on CPU, VAE on GPU)
 ```
+
+### Optimisation stages
+
+- **Stage 1** — GPU surrogate sweep: sample 100 latent vectors, score via VAE predictor, run real FEM on top candidates.
+- **Stage 2a** (default) — Physical BO in (h, r) space per geometry via FreeCAD bridge.
+- **Stage 2b** (`--voxel-fem`) — Latent-space UCB/GP BO with direct CalculiX hex mesh; evaluates the full 32³ voxel topology, not just (h, r).
+
+### Geometry types and boundary conditions
+
+| Geometry | Fixed face | Load face | BO bounds |
+|----------|-----------|-----------|-----------|
+| `cantilever` | x-min | x-max | h ∈ [5,20] mm, r ∈ [0,5] mm |
+| `lbracket` | z-min (base of vertical arm) | x-max (tip of horizontal arm) | arm_h ∈ [8,25] mm, thickness ∈ [5,20] mm |
+| `tapered` | x-min | x-max | h_start ∈ [8,25] mm, taper ∈ [2,7] |
+| `ribbed` | x-min | x-max | rib_h ∈ [6,20] mm, plate_frac ∈ [2,6] |
 
 ---
 
-## 🛠 Setup & Usage
+## Setup
 
-### Precision Installation (RTX 5080)
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install torch --index-url https://download.pytorch.org/whl/cu128
+python -m venv venv && source venv/bin/activate
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
 ```
 
-### 1. High-Precision Generation (300 variants)
-```bash
-python freecad_bridge.py generate --n-variants 300 --n-workers 16 --geometry-types cantilever lbracket tapered ribbed
-```
-
-### 2. High-Speed VAE Training (1000 epochs)
-```bash
-# Uses Batch 128 and Pinned Memory for maximum RTX 5080 saturation
-python quickstart.py --step 3 --epochs 1000
-```
-
-### 3. Organic Bayesian Optimization
-```bash
-# Anchors search using existing valid designs; enforces connectivity invariants
-python quickstart.py --step 4 --n-iter 100
-```
-
-### 4. Scale-Preserved Export
-```bash
-python quickstart.py --step 5
-```
+FreeCAD 1.0 must be installed on Windows (not in WSL). The bridge auto-detects it under `/mnt/c/`.
 
 ---
 
-## 💎 Features
-
-### 🌿 Organic Discovery
-The decoder implements an **Organic Density Filter**. Instead of sharp pixelated voxels, the optimizer explores a continuous density field, leading to structures that resemble biological growth or high-end topology optimization.
-
-### 🔷 Multi-Geometry Bayesian Optimisation
-Four geometry types are fully wired end-to-end with correct FEM boundary conditions and dedicated BO parameter bounds:
-
-| Geometry | Fixed BC | Load BC | BO params |
-|----------|----------|---------|-----------|
-| `cantilever` | left x-face | right x-face | h ∈ [5,20] mm, r ∈ [0,5] mm |
-| `lbracket` | bottom z-face (vertical arm) | x-max tip (horizontal arm) | arm_h ∈ [8,25] mm, thickness ∈ [5,20] mm |
-| `tapered` | left x-face | right x-face | h_start ∈ [8,25] mm, taper ∈ [2,7] |
-| `ribbed` | left x-face | right x-face | rib_h ∈ [6,20] mm, plate_frac ∈ [2,6] |
-
-Switch geometry via `"geometry_type"` in `sim_config.json`.
-
-### ⚡ Direct CalculiX Voxel FEM (`--voxel-fem`)
-`voxel_fem.py` converts VAE-decoded voxel grids directly into CalculiX C3D8 hex meshes and runs `ccx` without FreeCAD. This enables true non-parametric topology optimisation: the full 32³ voxel structure is evaluated, not just an (h, r) parameter pair.
+## Usage
 
 ```bash
-# Unit test (10×10×10 solid cube, stress + displacement verified):
+# Full pipeline
+python quickstart.py --all --config pipeline_config.json
+
+# Individual steps
+python quickstart.py --step 2                          # extract FEM data
+python quickstart.py --step 3 --epochs 200             # train VAE
+python quickstart.py --step 4 --n-iter 50              # Bayesian optimisation
+python quickstart.py --step 5                          # export best design
+
+# Direct optimisation
+python optimization_engine.py --model-checkpoint checkpoints/vae_best.pth --n-iterations 100
+python optimization_engine.py --model-checkpoint checkpoints/vae_best.pth --voxel-fem
+
+# Voxel FEM unit test (10x10x10 cube, verifies ccx + .frd parser)
 python voxel_fem.py --test
 
-# Run full optimisation with voxel FEM in Stage 2:
-python optimization_engine.py --model-checkpoint checkpoints/vae_best.pth --voxel-fem
+# Synthetic end-to-end test (no FreeCAD required)
+python synthetic_test.py
 ```
 
-### 📐 Scale Preservation
-Every design sample carries its **BoundBox** metadata. The exported STL is shifted and scaled back to its real-world origin and dimensions, ready for 3D printing or CAD assembly.
-
-### 🛡️ Physicality Guardrails
-Before a simulation is attempted the system checks for **Structural Connectivity**. Fragmented or too-thin designs are penalised and skipped, saving CPU cycles.
+Set `"geometry_type"` in `sim_config.json` to switch geometry (`cantilever` | `lbracket` | `tapered` | `ribbed`).
 
 ---
 
-## 🧊 Hardware & Precision (Blackwell/RTX 5080)
+## Configuration
 
-- **FP8 Simulation**: Voxel grids are stored as `uint8` in memory, reducing VRAM usage by 4x during massive training runs.
-- **Stability Workaround**: BoTorch `SingleTaskGP` models are automatically offloaded to the **CPU** via `blackwell_compat.py` to avoid the CUDA 12.8 batch GEMM bug, while VAE inference remains on the GPU for speed.
-
----
-
-## 📂 Configuration
-
-- **`materials.json`**: Define Young's Modulus, Yield Strength, Density, and Thermal constants.
-- **`pipeline_config.json`**: Fine-tune VAE dimensions, learning rates, and BO acquisition strategies.
-- **`sim_config.json`**: Set optimization weights (Stiffness vs. Mass) and safety factors.
+| File | Purpose |
+|------|---------|
+| `pipeline_config.json` | VAE dims, learning rate, voxel resolution, BO acquisition |
+| `sim_config.json` | Geometry type, FEM weights (stress/compliance/mass), yield limit |
+| `materials.json` | Material properties (E, Poisson, density, thermal) |
 
 ---
 
-## 📄 License
-This project is for generative design research and industrial optimization. Refer to [FreeCAD](https://www.freecad.org/) and [BoTorch](https://botorch.org/) for underlying dependency licenses.
+## Hardware notes (RTX 5080 / Blackwell)
+
+Install torch from the `cu128` index — the `cu121` build does not include sm_120 kernels.
+
+The RTX 5080 triggers a cuBLAS batched GEMM crash for batch >= 2 in CUDA 12.8. `blackwell_compat.py` routes BoTorch GP models to CPU automatically. See `CLAUDE.md` for full details.
+
+---
+
+## License
+
+Research and industrial optimisation use. Refer to [FreeCAD](https://www.freecad.org/) and [BoTorch](https://botorch.org/) for dependency licenses.
