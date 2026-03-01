@@ -31,7 +31,7 @@ If retrain hasn't finished yet, start Task 1 (stale test cleanup) while waiting.
 
 ---
 
-### Task 1: Remove Stale Tests
+### Task 1: Remove Stale Tests [DONE]
 
 The existing tests import modules/symbols that no longer exist (`topology.mesh_export`, `sim_config.load_config`, `SIMP`, etc.). They block `pytest` collection.
 
@@ -70,7 +70,7 @@ git commit -m "test: remove stale tests (import modules no longer exist)"
 
 ---
 
-### Task 2: Unit Tests — `voxel_fem.py` Pure Functions
+### Task 2: Unit Tests — `voxel_fem.py` Pure Functions [DONE]
 
 These tests cover `_wsl_to_win()` and `VoxelHexMesher.voxels_to_inp()` — no FreeCAD, no GPU, no ccx required.
 
@@ -211,7 +211,7 @@ git commit -m "test: add VoxelHexMesher unit tests (no FreeCAD/GPU)"
 
 ---
 
-### Task 3: Unit Tests — `freecad_workbench/export_pipeline.py` Pure Functions
+### Task 3: Unit Tests — `freecad_workbench/export_pipeline.py` Pure Functions [DONE]
 
 Test the config export logic without needing a live FreeCAD document — mock the document objects.
 
@@ -361,7 +361,7 @@ git commit -m "test: add export_pipeline unit tests with mocked FreeCAD doc"
 
 ---
 
-### Task 4: Unit Tests — `rebuild_dataset.py` Pair Scanner
+### Task 4: Unit Tests — `rebuild_dataset.py` Pair Scanner [DONE]
 
 Test `load_pairs()` with a synthetic temp directory of JSON+STL fixtures.
 
@@ -457,7 +457,7 @@ git commit -m "test: add rebuild_dataset load_pairs unit tests"
 
 ---
 
-### Task 5: Integration Tests — VAE Forward Pass (GPU)
+### Task 5: Integration Tests — VAE Forward Pass (GPU) [DONE]
 
 Verify the model architecture, dtype handling, and encode/decode roundtrip on GPU. Requires CUDA but no dataset or FreeCAD.
 
@@ -591,7 +591,7 @@ git commit -m "test: add VAE GPU integration tests incl Blackwell BF16 regressio
 
 ---
 
-### Task 6: Run Full Test Suite
+### Task 6: Run Full Test Suite [DONE]
 
 Confirm all tasks 1-5 pass together cleanly.
 
@@ -620,7 +620,7 @@ git commit -m "test: full suite passes (35 tests, 0 failures)"
 
 ---
 
-### Task 7: Post-Retrain Evaluation
+### Task 7: Post-Retrain Evaluation [DONE]
 
 Run `eval_vae.py` on the production checkpoint to get reconstruction metrics and sample STLs.
 
@@ -672,7 +672,7 @@ git commit -m "eval: post-retrain VAE evaluation (IoU=X.XX, BCE=X.XXX)"
 
 ---
 
-### Task 8: BO Smoke Test — 20 Evaluations, Cantilever
+### Task 8: BO Smoke Test — 20 Evaluations, Cantilever [DONE]
 
 Verify the full optimisation loop runs without error and produces a non-trivial Pareto front.
 
@@ -721,7 +721,7 @@ git commit -m "eval: BO smoke test (5 rounds, N Pareto designs)"
 
 ---
 
-### Task 9: Voxel FEM Integration Test
+### Task 9: Voxel FEM Integration Test [DONE]
 
 Run a short BO loop using `--voxel-fem` to verify the direct CalculiX path works end-to-end with a real decoded voxel.
 

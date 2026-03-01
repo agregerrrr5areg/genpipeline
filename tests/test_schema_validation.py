@@ -37,5 +37,26 @@ def test_config_logic():
     cfg = PipelineConfig(voxel_resolution=32)
     assert cfg.input_shape == [32, 32, 32]
 
+def test_config_validators():
+    """Test custom validators in PipelineConfig."""
+    from genpipeline.schema import PipelineConfig
+    
+    # Valid
+    PipelineConfig(beta_vae=0.5, batch_size=64, voxel_resolution=32)
+    
+    # Invalid beta_vae
+    with pytest.raises(ValidationError, match="beta_vae"):
+        PipelineConfig(beta_vae=0.0)
+    with pytest.raises(ValidationError, match="beta_vae"):
+        PipelineConfig(beta_vae=11.0)
+        
+    # Invalid batch_size
+    with pytest.raises(ValidationError, match="batch_size"):
+        PipelineConfig(batch_size=0)
+        
+    # Invalid voxel_resolution
+    with pytest.raises(ValidationError, match="voxel_resolution"):
+        PipelineConfig(voxel_resolution=40)
+
 if __name__ == "__main__":
     pytest.main([__file__])

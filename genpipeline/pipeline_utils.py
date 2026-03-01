@@ -36,15 +36,17 @@ def is_valid_fem_result(result) -> bool:
 # ── JSON encoder ───────────────────────────────────────────────────────────────
 
 class NumpyEncoder(json.JSONEncoder):
-    """JSON encoder that handles numpy scalars and arrays."""
+    """JSON encoder that handles numpy types and Pydantic models."""
 
     def default(self, obj):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
-        if isinstance(obj, np.integer):
+        if isinstance(obj, (np.integer, np.int64)):
             return int(obj)
-        if isinstance(obj, np.floating):
+        if isinstance(obj, (np.floating, np.float64)):
             return float(obj)
+        if hasattr(obj, "model_dump") and callable(obj.model_dump):
+            return obj.model_dump()
         return super().default(obj)
 
 

@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Delete dead scripts
+### Task 1: Delete dead scripts [DONE]
 
 These files are not imported by any core module and are superseded by the proper test suite or by other files.
 
@@ -46,7 +46,7 @@ git commit -m "chore: delete dead scripts (synthetic_test, sim_config, visualize
 
 ---
 
-### Task 2: Append VoxelConverter to pipeline_utils.py
+### Task 2: Append VoxelConverter to pipeline_utils.py [DONE]
 
 Copy the live methods from `utils.VoxelConverter` into `pipeline_utils.py`. Drop `smooth_voxel_grid` (already covered by `smooth_voxels()`).
 
@@ -133,7 +133,7 @@ Expected: `ok`
 
 ---
 
-### Task 3: Append ManufacturabilityConstraints to pipeline_utils.py
+### Task 3: Append ManufacturabilityConstraints to pipeline_utils.py [DONE]
 
 **Files:**
 - Modify: `pipeline_utils.py`
@@ -208,7 +208,7 @@ Expected: `ok`
 
 ---
 
-### Task 4: Update import sites
+### Task 4: Update import sites [DONE]
 
 Three files import from `utils`. Change them all to import from `pipeline_utils`.
 
@@ -260,7 +260,7 @@ Expected: no output.
 
 ---
 
-### Task 5: Delete utils.py and run full test suite
+### Task 5: Delete utils.py and run full test suite [DONE]
 
 **Step 1: Delete utils.py**
 

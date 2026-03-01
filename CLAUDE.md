@@ -122,27 +122,34 @@ tensorboard --logdir ./logs   # http://localhost:6006
 
 ```
 FreeCAD (FEMbyGEN) → parametric variants → CalculiX FEM sims
-    → fem/data_pipeline.py  →  32³ voxel grids + FEM metrics  →  fem/data/fem_dataset.pt
-    → vae_design_model.py   →  trained 3D VAE  (checkpoints/vae_best.pth)
-    → optimisation_engine.py → Bayesian opt loop (GP surrogate + UCB acquisition)
+    → fem/data_pipeline.py  →  64³ voxel grids + FEM metrics  →  fem/data/fem_dataset.pt
+    → genpipeline/vae_design_model.py   →  trained 3D VAE  (checkpoints/vae_best.pth)
+    → genpipeline/optimization_engine.py → Bayesian opt loop (GP surrogate + UCB acquisition)
     → decode best z → voxel → mesh → STL/STEP export
 ```
 
 ### Module Roles
 
-- **`fem/data_pipeline.py`** — reads `.FCStd` files, extracts FEM results (stress, compliance), exports meshes as STL, voxelises to 32³ binary grids, creates 80/20 train/val PyTorch Dataset saved to `fem/data/`.
-- **`vae_design_model.py`** — 3D convolutional VAE: `Encoder (3×Conv3D→FC) → latent μ/σ (16-dim) → Decoder (FC→3×ConvTranspose3D)` with a performance predictor head outputting stress/compliance/mass. Includes KL annealing and checkpoint management.
-- **`optimisation_engine.py`** — wraps BoTorch GP + UCB acquisition. Each iteration: sample latent `z` → decode → run FEM in FreeCAD → update GP. Objective: `stress + 0.1×compliance + 0.01×mass`. History saved to `optimisation_results/`.
-- **`pipeline_utils.py`** — Shared utilities for the generative design pipeline (merged from `utils.py`). Includes geometry voxelization helpers, manufacturability constraint checking (min feature size, max overhang angle), and JSON/numpy encoding.
-- **`topology/simp_solver.py`** — 3D SIMP topology optimisation using a structured voxel grid and proper FEM-based compliance minimisation (C3D8 elements). Supports dynamic boundary conditions (fixed_face, load_face, load_dof).
-- **`topology/simp_solver_gpu.py`** — PyTorch-based 3D SIMP solver for GPU (RTX 50 series card). Accelerates compliance minimisation and sensitivity analysis using tensor operations.
-- **`topology/topo_data_gen.py`** — **SIMP-based Dataset Generator.** Runs `SIMPSolver` across diverse configurations for all 4 geometry families (cant/lbra/tape/ribb).
-    - **Pros:** Fast, no FreeCAD required, scales to thousands of samples, physics-based (compliance minimization).
-    - **Cons:** Approximated stress metrics, structural distribution may differ from parametric FreeCAD variants (distribution shift).
-- **`topology/solver.py`** — Orchestrates topology optimisation, attempting `openlsto` and falling back to `SIMP` (GPU preferred). Automatically handles dynamic `voxel_size_mm` for STL export.
-- **`topology/mesh_export.py`** — Converts voxel density fields to STL using marching cubes.
-- **`freecad_workbench/preserved_region_obj.py`** — FeaturePython object for defining non-design domains (preserved regions) in FreeCAD.
-- **`quickstart.py`** — orchestrates all steps; includes `step 0` / `--topo-data` for one-command dataset bootstrapping without FreeCAD.
+- **`fem/data_pipeline.py`** — reads `.FCStd` files, extracts FEM results (stress, compliance), exports meshes as STL, voxelises to 64³ binary grids, creates 80/20 train/val PyTorch Dataset saved to `fem/data/`.
+- **`genpipeline/vae_design_model.py`** — 3D convolutional VAE with a performance predictor head outputting stress/compliance/mass.
+- **`genpipeline/optimization_engine.py`** — wraps BoTorch GP + UCB acquisition. MOBO loop logic.
+- **`genpipeline/pipeline_utils.py`** — Shared utilities (voxelization, manufacturability, encoding).
+- **`genpipeline/schema.py`** — Pydantic models for type-safe data passing and validation.
+- **`genpipeline/config.py`** — Configuration loading and validation using Pydantic.
+- **`fem/voxel_fem.py`** — Direct CalculiX voxel FEM path, bypassing FreeCAD.
+- **`topology/topo_data_gen.py`** — SIMP-based physics-grounded dataset generator.
+- **`quickstart.py`** — Integrated CLI orchestrator for all pipeline steps.
+
+### Testing & Verification
+
+Comprehensive test suite in `tests/`:
+- `test_schema_validation.py`: Pydantic model and validator checks.
+- `test_vae_model.py`: GPU integration and architecture tests.
+- `test_optimization_engine.py`: MOBO loop and fallback logic.
+- `test_voxel_fem.py`: CalculiX integration and meshing tests.
+- `test_provenance.py`: Data integrity and 'No Synthetic Data' mandate guards.
+- `test_rebuild_dataset.py`: STL scanner and dataset construction tests.
+- `test_export_pipeline.py`: FreeCAD workbench export logic mocks.
 
 ### Quickstart Bootstrap
 ```bash

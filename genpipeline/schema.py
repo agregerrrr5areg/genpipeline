@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Dict, Optional, List, Any
 import numpy as np
 
@@ -86,6 +86,27 @@ class PipelineConfig(BaseModel):
     optimisation: OptimisationConfig = Field(default_factory=OptimisationConfig)
     performance_weights: PerformanceWeights = Field(default_factory=PerformanceWeights)
     manufacturing_constraints: ManufacturingConstraints = Field(default_factory=ManufacturingConstraints)
+
+    @field_validator("beta_vae")
+    @classmethod
+    def check_beta_vae(cls, v: float) -> float:
+        if not (0.0 < v <= 10.0):
+            raise ValueError(f"beta_vae must be between 0.0 and 10.0, got {v}")
+        return v
+
+    @field_validator("batch_size")
+    @classmethod
+    def check_batch_size(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError(f"batch_size must be positive, got {v}")
+        return v
+
+    @field_validator("voxel_resolution")
+    @classmethod
+    def check_voxel_res(cls, v: int) -> int:
+        if v % 16 != 0:
+            raise ValueError(f"voxel_resolution must be a multiple of 16, got {v}")
+        return v
 
     @property
     def input_shape(self) -> List[int]:

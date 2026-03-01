@@ -7,7 +7,7 @@ from pathlib import Path
 from genpipeline.config import load_config
 from genpipeline.trainer import train_vae
 from genpipeline.optimiser import run_optimisation
-from fem.data_pipeline import DataPipeline
+from genpipeline.fem.data_pipeline import DataPipeline
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)

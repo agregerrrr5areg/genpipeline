@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from .optimization_engine import DesignOptimizer
 from .vae_design_model import DesignVAE
-from fem.voxel_fem import VoxelFEMEvaluator
+from .fem.voxel_fem import VoxelFEMEvaluator
 from .schema import PipelineConfig
 
 logger = logging.getLogger(__name__)

@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from fem.data_pipeline import FEMResultParser
+from genpipeline.fem.data_pipeline import FEMResultParser
 
 def test_provenance_check_rejected(tmp_path):
     """Test that disconnected synthetic files are rejected."""
