@@ -89,7 +89,9 @@ def step_3_train_vae(config: PipelineConfig, train_loader, val_loader):
         return None
     device = config['device']
     model = DesignVAE(input_shape=(64, 64, 64), latent_dim=config['latent_dim'])
-    trainer = VAETrainer(model, train_loader, val_loader, device=device, lr=config['learning_rate'], beta=config['beta_vae'])
+    trainer = VAETrainer(model, train_loader, val_loader, device=device,
+                        lr=config['learning_rate'], beta=config['beta_vae'],
+                        epochs=config['epochs'])
     trainer.fit(epochs=config['epochs'])
     return model
 

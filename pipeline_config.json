@@ -4,8 +4,8 @@
   "voxel_resolution": 64,
   "use_sdf": false,
   "latent_dim": 32,
-  "batch_size": 32,
-  "epochs": 300,
+  "batch_size": 128,
+  "epochs": 500,
   "learning_rate": 0.0003,
   "beta_vae": 0.05,
   "device": "cuda",
@@ -16,10 +16,6 @@
   "n_init_points": 5,
   "checkpoint_dir": "./checkpoints",
   "log_dir": "./logs",
-  "manufacturing_constraints": {
-    "min_feature_size_mm": 2.0,
-    "max_overhang_angle_deg": 45.0
-  },
   "optimization": {
     "acquisition_function": "UCB",
     "beta": 0.1,
@@ -43,4 +39,5 @@
     "min_feature_size_mm": 5.0,
     "max_overhang_angle_deg": 45.0,
     "min_volume_fraction": 0.15
-  },
+  }
+}
