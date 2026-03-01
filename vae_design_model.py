@@ -78,7 +78,8 @@ class DesignVAE(nn.Module):
             ConvTranspose3DBlock(32, 16, kernel_size=4, stride=2, padding=1, output_padding=0),
             ConvTranspose3DBlock(16, 8, kernel_size=4, stride=2, padding=1, output_padding=0),
             nn.Conv3d(8, 1, kernel_size=3, padding=1),
-            nn.Sigmoid()
+            # No Sigmoid here — outputs logits for BCEWithLogitsLoss
+            # Apply torch.sigmoid() at inference time
         )
 
         self.performance_head = nn.Sequential(
@@ -122,8 +123,14 @@ class DesignVAE(nn.Module):
     def decode(self, z):
         h = self.fc_decode(z)
         h = h.view(-1, 64, 4, 4, 4)
-        x_recon = self.decoder(h)
+        x_recon = torch.sigmoid(self.decoder(h))
         return x_recon
+
+    def decode_logits(self, z):
+        """Returns raw logits (for use with BCEWithLogitsLoss during training)."""
+        h = self.fc_decode(z)
+        h = h.view(-1, 64, 4, 4, 4)
+        return self.decoder(h)
 
     def predict_performance(self, z):
         return self.performance_head(z)
@@ -134,7 +141,7 @@ class DesignVAE(nn.Module):
     def forward(self, x):
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
-        x_recon = self.decode(z)
+        x_recon = self.decode_logits(z)  # logits for BCEWithLogitsLoss
         perf_pred = self.predict_performance(z)
         params_pred = self.predict_parameters(z)
         return x_recon, mu, logvar, z, perf_pred, params_pred
@@ -152,7 +159,11 @@ class VAELoss(nn.Module):
                 perf_pred, perf_true,
                 params_pred, params_true,
                 kl_weight=1.0):
-        recon_loss = self.mse_loss(x_recon, x_true)
+        # Weighted BCE: solid voxels (~7% of data) are up-weighted 13x to fight class imbalance
+        pos_weight = torch.tensor([13.0], device=x_true.device)
+        recon_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+            x_recon, x_true, pos_weight=pos_weight, reduction='mean'
+        )
 
         kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
 

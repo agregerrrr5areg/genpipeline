@@ -36,7 +36,7 @@ def default_config() -> dict:
         "w_mass":          0.01,
         "constraints":     mat.get("design_constraints", {
             "min_feature_size_mm": 1.0,
-            "min_volume_fraction": 0.15,
+            "min_volume_fraction": 0.01,  # Cantilever beams are thin (~2.5% median fill)
             "max_volume_fraction": 0.50,
             "organic_smoothness": 0.5
         })
