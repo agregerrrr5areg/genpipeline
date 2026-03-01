@@ -17,16 +17,12 @@ venv/
 checkpoints/
 
 # ── Generated FEM data — reproducible by re-running freecad_bridge.py ─────────
-fem_variants/*.stl
-fem_variants/*.json
-fem_variants/*.pt
-fem_data/*.stl
-fem_data/*.json
-fem_data/*.pt
-fem_data_variants/
-fem_data_diversity/
-fem_data_precision/
-fem_test_run/
+fem/data/
+fem/variants/
+fem/data_diversity/
+fem/data_precision/
+fem/test_run/
+fem/data_lbracket_test/
 
 # ── Topology solver outputs ───────────────────────────────────────────────────
 /tmp/bo_variants/
