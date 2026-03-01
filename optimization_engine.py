@@ -54,10 +54,11 @@ class BridgeEvaluator:
                 rr_mm = float(params.get("r_mm", 0.0))
                 geom = params.get("geometry", "cantilever")
                 
-                # Realistic Dimension Guard (5mm thickness)
+                # Dimension guard: cantilever needs 5mm wall thickness after hole
                 if geom == "cantilever" and h_mm - (2 * rr_mm) < 4.9:
                     results_out[idx] = {"stress": 1e6, "compliance": 1e6, "mass": 1.0, "parameters": params}
                     continue
+                # lbracket/ribbed/tapered: r_mm is thickness/ratio, always valid if in GEOM_SPACES bounds
 
                 future = executor.submit(
                     freecad_bridge.run_variant,
@@ -143,14 +144,19 @@ class DesignOptimizer:
     def optimize_step_parallel(self, q=4):
         """MOBO Step: Explore the Pareto Front of Stress vs Mass for Plastic."""
 
-        if not BOTORCH_AVAILABLE or len(self.x_history) < 10:
-            # Seed with Latent points only (material is fixed)
+        # Only use non-sentinel evaluations for GP fitting (stress=1e6 = FEM failure)
+        valid_mask = [y[0] < 1e5 for y in self.y_history]
+        n_valid = sum(valid_mask)
+
+        if not BOTORCH_AVAILABLE or n_valid < 10:
             z_batch = np.random.randn(q, self.latent_dim) * 2.0
             return self._evaluate_latent_batch(z_batch)
 
-        # Fit multi-output GP on CPU (Search space is back to latent_dim only)
-        train_X = torch.tensor(np.array(self.x_history), dtype=torch.float64).to(botorch_device)
-        train_Y = torch.tensor(np.array(self.y_history), dtype=torch.float64).to(botorch_device)
+        # Fit multi-output GP on CPU (Search space is latent_dim only)
+        valid_x = [x for x, ok in zip(self.x_history, valid_mask) if ok]
+        valid_y = [y for y, ok in zip(self.y_history, valid_mask) if ok]
+        train_X = torch.tensor(np.array(valid_x), dtype=torch.float64).to(botorch_device)
+        train_Y = torch.tensor(np.array(valid_y), dtype=torch.float64).to(botorch_device)
         
         train_Y_std = (train_Y - train_Y.mean(dim=0)) / (train_Y.std(dim=0) + 1e-6)
         train_Y_std = -train_Y_std
