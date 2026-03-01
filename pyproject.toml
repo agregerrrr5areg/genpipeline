@@ -21,6 +21,7 @@ dependencies = [
     "click",
     "pyyaml",
 ]
+license = {text = "Proprietary"}
 
 [[tool.uv.index]]
 name = "pytorch"

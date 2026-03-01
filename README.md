@@ -99,4 +99,4 @@ The RTX 50 series requires `torch` from the `cu128` index for sm_120 support. Du
 
 ## License
 
-Research and industrial optimisation use. Refer to [FreeCAD](https://www.freecad.org/) and [BoTorch](https://botorch.org/) for dependency licenses.
+Proprietary. All rights reserved. You are granted permission to use this software for evaluation and research, but redistribution or resale is strictly prohibited. See the [LICENSE](LICENSE) file for the full legal text.
