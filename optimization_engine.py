@@ -228,21 +228,28 @@ class DesignOptimizer:
 
         results = self.fem_evaluator.evaluate_batch(param_list)
         
+        stress_limit = self.sim_cfg.get("max_stress_mpa", 1e9)
         for i, res in enumerate(results):
             self.x_history.append(z_batch[i])
             self.y_history.append([res["stress"], res["mass"]])
-            
-            # Incorporate Targets and Weights
-            stress_limit = self.sim_cfg.get("max_stress_mpa", 1e9)
+
+            # Skip sentinel values — don't log or track failures as "best"
+            if not (0.0 < res["stress"] < 1e5):
+                continue
+
             penalty = 5e5 if res["stress"] > stress_limit else 0.0
-            
-            obj = (self.sim_cfg["w_stress"] * res["stress"] + 
-                   self.sim_cfg["w_mass"] * res["mass"] + 
+            obj = (self.sim_cfg["w_stress"] * res["stress"] +
+                   self.sim_cfg["w_mass"] * res["mass"] +
                    penalty)
-            
-            if obj == min([ (self.sim_cfg["w_stress"] * y[0] + self.sim_cfg["w_mass"] * y[1] + (5e5 if y[0] > stress_limit else 0.0)) for y in self.y_history]):
+
+            valid_scores = [
+                self.sim_cfg["w_stress"] * y[0] + self.sim_cfg["w_mass"] * y[1] +
+                (5e5 if y[0] > stress_limit else 0.0)
+                for y in self.y_history if 0.0 < y[0] < 1e5
+            ]
+            if obj <= min(valid_scores):
                 self.best_bbox = res.get("bbox")
-                logger.info(f"  New Safe Best: Stress={res['stress']:.1f}MPa (Target: {stress_limit}), Mass={res['mass']:.3f}kg")
+                logger.info(f"  New Best: Stress={res['stress']:.1f}MPa (limit={stress_limit}), Mass={res['mass']:.4f}kg")
 
         return z_batch, results
 

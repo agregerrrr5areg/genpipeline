@@ -199,10 +199,13 @@ if __name__ == "__main__":
     parser.add_argument('--step', type=int, choices=[1, 2, 3, 4, 5])
     parser.add_argument('--all', action='store_true')
     parser.add_argument('--n-iter', type=int)
+    parser.add_argument('--results-dir', type=str, default=None,
+                        help='Override output_dir for step 5 export')
     args = parser.parse_args()
 
     config = PipelineConfig('pipeline_config.json')
     if args.n_iter: config['n_optimization_iterations'] = args.n_iter
+    if args.results_dir: config['output_dir'] = args.results_dir
 
     if args.all:
         step_1_setup_freecad(config)
