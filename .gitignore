@@ -55,7 +55,6 @@ temp_*.py
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
-rebuild_dataset.py
 
 
 # Scratch scripts and run logs

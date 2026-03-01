@@ -169,7 +169,7 @@ def run_extraction(freecad_cmd: str, fcstd_wsl: str,
 
 # ── Dataset builder ────────────────────────────────────────────────────────────
 
-def build_dataset(output_dir: Path, voxel_resolution: int = 32):
+def build_dataset(output_dir: Path, voxel_resolution: int = 64):
     from fem_data_pipeline import FEMDataset, DesignSample, VoxelGrid
 
     json_files = sorted(output_dir.glob("*_fem_results.json"))
@@ -315,7 +315,7 @@ def generate_variants(freecad_cmd: str, output_dir: Path,
                       n: int = 50,
                       h_range: tuple = (5.0, 20.0),
                       r_range: tuple = (0.0,  8.0),
-                      voxel_resolution: int = 32,
+                      voxel_resolution: int = 64,
                       seed: int = 42,
                       n_workers: int = 4,
                       geometry_types: list = None):
