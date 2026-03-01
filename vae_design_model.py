@@ -42,7 +42,7 @@ class ConvTranspose3DBlock(nn.Module):
 
 
 class DesignVAE(nn.Module):
-    def __init__(self, input_shape=(32, 32, 32), latent_dim=16):
+    def __init__(self, input_shape=(64, 64, 64), latent_dim=16):
         super(DesignVAE, self).__init__()
         self.input_shape = input_shape
         self.latent_dim = latent_dim
@@ -53,6 +53,8 @@ class DesignVAE(nn.Module):
             Conv3DBlock(16, 32, kernel_size=3, stride=1, padding=1),
             nn.MaxPool3d(kernel_size=2, stride=2),
             Conv3DBlock(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.MaxPool3d(kernel_size=2, stride=2),
+            Conv3DBlock(64, 64, kernel_size=3, stride=1, padding=1),
             nn.MaxPool3d(kernel_size=2, stride=2),
         )
 
@@ -77,6 +79,7 @@ class DesignVAE(nn.Module):
             ConvTranspose3DBlock(64, 32, kernel_size=4, stride=2, padding=1, output_padding=0),
             ConvTranspose3DBlock(32, 16, kernel_size=4, stride=2, padding=1, output_padding=0),
             ConvTranspose3DBlock(16, 8, kernel_size=4, stride=2, padding=1, output_padding=0),
+            ConvTranspose3DBlock(8, 8, kernel_size=4, stride=2, padding=1, output_padding=0),
             nn.Conv3d(8, 1, kernel_size=3, padding=1),
             # No Sigmoid here — outputs logits for BCEWithLogitsLoss
             # Apply torch.sigmoid() at inference time
@@ -340,7 +343,7 @@ if __name__ == "__main__":
     train_loader = checkpoint['train_loader']
     val_loader = checkpoint['val_loader']
 
-    model = DesignVAE(input_shape=(32, 32, 32), latent_dim=args.latent_dim)
+    model = DesignVAE(input_shape=(64, 64, 64), latent_dim=args.latent_dim)
 
     trainer = VAETrainer(
         model,
