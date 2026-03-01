@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).parent))
 from fem.data_pipeline import VoxelGrid, FEMDataset, DesignSample
+from schema import FEMResult, DesignParameters
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
@@ -93,15 +94,32 @@ def build_samples(pairs: list, resolution: int) -> list:
         if grid.max() == 0:
             log.warning(f"  Empty voxel: {stl_path.name}")
             continue
-        samples.append(DesignSample(
-            geometry_path=str(stl_path),
+        # Parse parameters
+        params_dict = d.get("parameters", {})
+        # Map common names if needed or use defaults
+        p = DesignParameters(
+            h_mm=params_dict.get("h_mm", 10.0),
+            r_mm=params_dict.get("r_mm", 2.0),
+            geometry_type=params_dict.get("geometry_type", "cantilever"),
+            material_name=params_dict.get("material_name", "Plastic_ABS"),
+            material_cfg=params_dict.get("material_cfg")
+        )
+
+        # Parse metrics
+        m = FEMResult(
             stress_max=float(d.get("stress_max", 0)),
             stress_mean=float(d.get("stress_mean", 0)),
             compliance=float(d.get("compliance", 0)),
             mass=float(d.get("mass", 1.0)),
-            parameters=d.get("parameters", {}),
-            voxel_grid=(grid * 255).astype(np.uint8),
             bbox=d.get("bbox"),
+            success=True
+        )
+
+        samples.append(DesignSample(
+            geometry_path=str(stl_path),
+            metrics=m,
+            parameters=p,
+            voxel_grid=(grid * 255).astype(np.uint8)
         ))
     return samples
 

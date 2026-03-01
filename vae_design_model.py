@@ -9,6 +9,7 @@ import numpy as np
 from collections import namedtuple
 from pathlib import Path
 import logging
+import pynvml
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -255,12 +256,27 @@ class VAETrainer:
         }, f"checkpoints/{name}")
 
     def fit(self, epochs=500):
+        try:
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            has_nvml = True
+        except:
+            has_nvml = False
+            logger.warning("NVML not available, GPU tracking disabled.")
+
         for e in range(epochs):
             # KL ramp: full weight by epoch 50
             kl_weight   = min(1.0, (e + 1) / 50)
             train_loss  = self.train_epoch(e, kl_weight)
             val_loss    = self.validate(e)
-            logger.info(f"Epoch {e:3d} | train={train_loss:.4f} | val={val_loss:.4f} | kl_w={kl_weight:.2f}")
+            
+            hw_msg = ""
+            if has_nvml:
+                info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+                hw_msg = f" | VRAM {info.used/1024**2:.0f}MB | Temp {temp}C"
+                
+            logger.info(f"Epoch {e:3d} | train={train_loss:.4f} | val={val_loss:.4f}{hw_msg}")
 
 
 if __name__ == "__main__":

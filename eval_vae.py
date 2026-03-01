@@ -14,7 +14,15 @@ Usage:
 import argparse
 import json
 import logging
+import sys
 from pathlib import Path
+
+# Backwards compatibility for old checkpoints
+try:
+    import fem.data_pipeline
+    sys.modules["fem_data_pipeline"] = fem.data_pipeline
+except ImportError:
+    pass
 
 import numpy as np
 import torch

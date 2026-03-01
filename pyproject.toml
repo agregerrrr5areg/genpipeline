@@ -1,0 +1,35 @@
+[project]
+name = "genpipeline"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = "~=3.13.0"
+dependencies = [
+    "pydantic",
+    "numpy",
+    "pandas",
+    "torch",
+    "torchvision",
+    "pynvml",
+    "trimesh",
+    "scipy",
+    "matplotlib",
+    "botorch",
+    "gpytorch",
+    "pyarrow",
+    "tqdm",
+    "click",
+    "pyyaml",
+]
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/nightly/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and python_version == '3.13'"]
