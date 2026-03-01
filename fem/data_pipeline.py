@@ -88,6 +88,27 @@ class FEMResultParser:
         logger.info(f"Results saved to {output_path}")
         return output_path
 
+    def validate_data_provenance(self, mesh_path: str) -> bool:
+        """
+        Enforce 'No Synthetic Data' mandate.
+        Verifies that a mesh file has a corresponding physical origin (e.g., a .step
+        or FreeCAD document) and isn't just a disconnected synthetic file.
+        """
+        path = Path(mesh_path)
+        # Check for matching .step or .FCStd file in the same or parent directory
+        provenance_sources = [
+            path.with_suffix('.step'),
+            path.with_suffix('.FCStd'),
+            path.parent / (path.stem + ".step"),
+            path.parent.parent / "designs" / (path.stem + ".FCStd")
+        ]
+        
+        has_physical_root = any(p.exists() for p in provenance_sources)
+        if not has_physical_root:
+            logger.warning(f"PROVENANCE REJECTED: {mesh_path} has no verifiable physical source (.step or .FCStd).")
+            return False
+        return True
+
     def extract_from_freecad(self, freecad_doc_path: str, output_json: str = "fem_results.json"):
         try:
             import FreeCAD
@@ -239,6 +260,10 @@ class DataPipeline:
                 if not os.path.exists(mesh_path):
                     logger.warning(f"Mesh not found at {mesh_path}, skipping sample")
                     continue
+                
+                # MANDATE CHECK: Reject synthetic data
+                if not self.parser.validate_data_provenance(mesh_path):
+                    continue
 
                 voxel = self.voxelizer.mesh_to_voxel(mesh_path)
                 sample = DesignSample(
@@ -271,6 +296,11 @@ class DataPipeline:
                 for analysis_name, metrics in fem_results.items():
                     if analysis_name in mesh_paths:
                         mesh_path = mesh_paths[analysis_name]
+                        
+                        # MANDATE CHECK: Reject synthetic data
+                        if not self.parser.validate_data_provenance(mesh_path):
+                            continue
+                            
                         voxel = self.voxelizer.mesh_to_voxel(mesh_path)
 
                         sample = DesignSample(
