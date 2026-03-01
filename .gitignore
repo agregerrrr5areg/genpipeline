@@ -57,3 +57,10 @@ temp_*.py
 Thumbs.db
 rebuild_dataset.py
 
+
+# Scratch scripts and run logs
+*.log
+pareto_discovery.png
+refine_design.py
+view_stresses.py
+visualize_pareto.py

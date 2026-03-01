@@ -244,20 +244,50 @@ class DesignOptimizer:
 if __name__ == "__main__":
     import argparse
     from vae_design_model import DesignVAE
-    
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-checkpoint", type=str, required=True)
-    parser.add_argument("--n-iter", type=int, default=250)
-    parser.add_argument("--q", type=int, default=4)
+    parser.add_argument("--n-iter",      type=int,  default=250)
+    parser.add_argument("--q",           type=int,  default=4)
+    parser.add_argument("--output-dir",  type=str,  default="./optimization_results")
+    parser.add_argument("--config-path", type=str,  default=None,
+                        help="Path to gendesign_config.json exported by the FreeCAD workbench")
     args = parser.parse_args()
+
+    # Load workbench config if provided (overrides CLI defaults)
+    wb_cfg = {}
+    if args.config_path and Path(args.config_path).exists():
+        with open(args.config_path) as f:
+            wb_cfg = json.load(f)
+        logger.info(f"Loaded workbench config from {args.config_path}")
+        logger.info(f"  geometry={wb_cfg.get('geometry_type')}  "
+                    f"n_iter={wb_cfg.get('n_iter')}  "
+                    f"constraints={len(wb_cfg.get('constraints', []))}  "
+                    f"loads={len(wb_cfg.get('loads', []))}")
+
+    n_iter = wb_cfg.get("n_iter", args.n_iter)
+    ckpt   = wb_cfg.get("checkpoint_path", args.model_checkpoint)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     vae = DesignVAE(input_shape=(64, 64, 64), latent_dim=32).to(device)
-    checkpoint = torch.load(args.model_checkpoint, map_location=device, weights_only=False)
+    checkpoint = torch.load(ckpt, map_location=device, weights_only=False)
     vae.load_state_dict(checkpoint['model_state_dict'])
-    
-    evaluator = BridgeEvaluator(n_workers=args.q)
-    optimizer = DesignOptimizer(vae, evaluator, latent_dim=32)
-    
-    optimizer.run_optimization(n_iterations=args.n_iter, q=args.q)
-    optimizer.save_results()
+
+    sim_cfg = {
+        "w_stress":     1.0,
+        "w_compliance": 0.1,
+        "w_mass":       0.01,
+        "geometry_type": wb_cfg.get("geometry_type", "cantilever"),
+        "max_stress_mpa": wb_cfg.get("max_stress_mpa", 250.0),
+        # Pass through any BC overrides from workbench
+        "fixed_face_normal": wb_cfg.get("fixed_face_normal", [-1, 0, 0]),
+        "load_face_normal":  wb_cfg.get("load_face_normal",  [1, 0, 0]),
+        "force_n":           wb_cfg.get("force_n", 1000.0),
+        "force_direction":   wb_cfg.get("force_direction", [0, 0, -1]),
+    }
+
+    evaluator = BridgeEvaluator(n_workers=args.q, output_dir=args.output_dir)
+    optimizer = DesignOptimizer(vae, evaluator, latent_dim=32, sim_cfg=sim_cfg)
+
+    optimizer.run_optimization(n_iterations=n_iter, q=args.q)
+    optimizer.save_results(args.output_dir)
