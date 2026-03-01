@@ -143,13 +143,18 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
     analysis.addObject(mat)
 
     # ── Mesh (Adaptive Refinement for Accuracy) ───────────────────────────
-    # If material is flexible (E < 10GPa), use finer mesh for deformation accuracy
+    # Mesh size must resolve the smallest feature (hole radius).
+    # r < base_length causes Gmsh to fail on the hole → CalculiX returns zeros.
+    # Cap base_length at half the hole radius so the feature is always resolved.
     base_length = 3.0 if e_mpa > 10000 else 1.5
-    
+    if r_mm > 0.5:
+        base_length = min(base_length, r_mm / 2.0)
+    base_length = max(base_length, 0.5)  # never go below 0.5mm (too slow)
+
     mesh_obj = ObjectsFem.makeMeshGmsh(doc, "FEMMeshGmsh")
     mesh_obj.Shape = shape_obj
     mesh_obj.CharacteristicLengthMax = f"{base_length} mm"
-    mesh_obj.CharacteristicLengthMin = "0.5 mm"
+    mesh_obj.CharacteristicLengthMin = f"{base_length / 4.0} mm"
     mesh_obj.ElementOrder = "2nd"               # C3D10
     analysis.addObject(mesh_obj)
 
