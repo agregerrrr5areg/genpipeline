@@ -272,6 +272,7 @@ class VAETrainer:
         logger.info(f'Loaded checkpoint: checkpoints/{filename}')
 
     def fit(self, epochs=100, start_epoch=0):
+        # torch.compile disabled due to RTX 5080/CUDA 12.8 bug (CUBLAS_STATUS_INVALID_VALUE)
         for epoch in range(start_epoch, epochs):
             kl_weight = min(1.0, (epoch + 1) / 20)
 

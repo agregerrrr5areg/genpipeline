@@ -408,8 +408,32 @@ Examples:
     elif args.step == 2:
         data_result = step_2_extract_fem_data(config)
     elif args.step == 3:
-        checkpoint = torch.load('fem_data/fem_dataset.pt', weights_only=False)
-        model = step_3_train_vae(config, checkpoint['train_loader'], checkpoint['val_loader'])
+        # Load raw dataset and rebuild DataLoaders for Hyper-Speed
+        data_path = Path(config['fem_data_output']) / "fem_dataset.pt"
+        checkpoint = torch.load(data_path, weights_only=False)
+        
+        # Extract the underlying Dataset objects
+        train_ds = checkpoint['train_loader'].dataset
+        val_ds   = checkpoint['val_loader'].dataset
+        
+        # Optimize DataLoader for RTX 5080
+        from torch.utils.data import DataLoader
+        train_loader = DataLoader(
+            train_ds, 
+            batch_size=128, 
+            shuffle=True, 
+            pin_memory=True, 
+            num_workers=4
+        )
+        val_loader = DataLoader(
+            val_ds, 
+            batch_size=128, 
+            shuffle=False, 
+            pin_memory=True, 
+            num_workers=4
+        )
+        
+        model = step_3_train_vae(config, train_loader, val_loader)
     elif args.step == 4:
         best_z, best_obj = step_4_optimize_designs(config)
         np.save(Path(config['output_dir']) / 'best_z.npy', best_z)

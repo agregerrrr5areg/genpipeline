@@ -7,7 +7,13 @@
     "tensile_mpa": 400,
     "thermal_conductivity_w_mk": 50.0,
     "specific_heat_j_kgk": 490.0,
-    "thermal_expansion_coeff": 1.2e-5
+    "thermal_expansion_coeff": 1.2e-5,
+    "design_constraints": {
+      "min_feature_size_mm": 2.0,
+      "min_volume_fraction": 0.15,
+      "max_volume_fraction": 0.60,
+      "organic_smoothness": 0.8
+    }
   },
   "Aluminium": {
     "E_mpa": 70000,
@@ -17,7 +23,13 @@
     "tensile_mpa": 310,
     "thermal_conductivity_w_mk": 237.0,
     "specific_heat_j_kgk": 897.0,
-    "thermal_expansion_coeff": 2.3e-5
+    "thermal_expansion_coeff": 2.3e-5,
+    "design_constraints": {
+      "min_feature_size_mm": 3.0,
+      "min_volume_fraction": 0.20,
+      "max_volume_fraction": 0.70,
+      "organic_smoothness": 0.6
+    }
   },
   "Titanium_6Al4V": {
     "E_mpa": 114000,
@@ -27,7 +39,13 @@
     "tensile_mpa": 950,
     "thermal_conductivity_w_mk": 6.7,
     "specific_heat_j_kgk": 523.0,
-    "thermal_expansion_coeff": 8.6e-6
+    "thermal_expansion_coeff": 8.6e-6,
+    "design_constraints": {
+      "min_feature_size_mm": 1.5,
+      "min_volume_fraction": 0.10,
+      "max_volume_fraction": 0.50,
+      "organic_smoothness": 0.9
+    }
   },
   "Plastic_ABS": {
     "E_mpa": 2300,
@@ -37,6 +55,12 @@
     "tensile_mpa": 45,
     "thermal_conductivity_w_mk": 0.17,
     "specific_heat_j_kgk": 1400.0,
-    "thermal_expansion_coeff": 9.0e-5
+    "thermal_expansion_coeff": 9.0e-5,
+    "design_constraints": {
+      "min_feature_size_mm": 1.0,
+      "min_volume_fraction": 0.30,
+      "max_volume_fraction": 0.90,
+      "organic_smoothness": 0.4
+    }
   }
 }

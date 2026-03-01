@@ -24,6 +24,8 @@ fem_data/*.stl
 fem_data/*.json
 fem_data/*.pt
 fem_data_variants/
+fem_data_diversity/
+fem_data_precision/
 fem_test_run/
 
 # ── Topology solver outputs ───────────────────────────────────────────────────
@@ -40,6 +42,9 @@ logs/
 
 # ── Simulation config (local machine-specific, may contain paths) ─────────────
 sim_config.json
+
+# ── Temp/scratch files ────────────────────────────────────────────────────────
+temp_*.py
 
 # ── Aider ─────────────────────────────────────────────────────────────────────
 .aider*

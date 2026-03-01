@@ -224,7 +224,7 @@ class FreeCADInterface:
                     results["stress_mean"] = float(np.mean(stress_vals))
 
             if hasattr(obj, 'DisplacementLengths'):
-                displacements = obj.DisplacementLength值
+                displacements = obj.DisplacementLengths
                 if displacements:
                     results["compliance"] = float(np.sum(displacements))
                     results["displacement_max"] = float(max(displacements))
@@ -335,6 +335,24 @@ class GeometryMetrics:
 
         surface_area = np.sqrt(sx**2 + sy**2 + sz**2).sum() * (voxel_size ** 2)
         return surface_area
+
+    @staticmethod
+    def compute_smoothness(voxel_grid: np.ndarray) -> float:
+        """Measures geometric smoothness (0.0 to 1.0)."""
+        from scipy.ndimage import gaussian_filter
+        if np.max(voxel_grid) < 0.1: return 0.0
+        
+        v = (voxel_grid > 0.5).astype(float)
+        v_smooth = gaussian_filter(v, sigma=1.0)
+        diff = np.abs(v - v_smooth).mean()
+        return 1.0 - (diff * 2.0)
+
+    @staticmethod
+    def compute_connectivity(voxel_grid: np.ndarray) -> int:
+        """Returns the number of connected components."""
+        from scipy.ndimage import label
+        _, num_features = label(voxel_grid > 0.5)
+        return num_features
 
     @staticmethod
     def compute_centroid(voxel_grid: np.ndarray) -> np.ndarray:
