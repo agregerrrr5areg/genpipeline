@@ -158,7 +158,7 @@ class DesignOptimizer:
         """MOBO Step: Explore the Pareto Front of Stress vs Mass for Plastic."""
 
         # Only use non-sentinel evaluations for GP fitting (stress=1e6 = FEM failure)
-        valid_mask = [y[0] < 1e5 for y in self.y_history]
+        valid_mask = [0.0 < y[0] < 1e5 for y in self.y_history]
         n_valid = sum(valid_mask)
 
         if not BOTORCH_AVAILABLE or n_valid < 10:
@@ -250,7 +250,7 @@ class DesignOptimizer:
         logger.info(f"Starting Multi-Objective Parallel Discovery (q={q})...")
         for i in range(n_iterations):
             self.optimize_step_parallel(q=q)
-            valid = [y for y in self.y_history if y[0] < 1e5]
+            valid = [y for y in self.y_history if 0.0 < y[0] < 1e5]
             if valid and BOTORCH_AVAILABLE:
                 n_pareto = is_non_dominated(-torch.tensor(valid)).sum().item()
             else:
@@ -258,7 +258,7 @@ class DesignOptimizer:
             logger.info(f"Round {i+1}/{n_iterations} complete. Valid={len(valid)}  Pareto={n_pareto}")
 
         # Find best non-failed design
-        valid_indices = [i for i, y in enumerate(self.y_history) if y[0] < 1e5]
+        valid_indices = [i for i, y in enumerate(self.y_history) if 0.0 < y[0] < 1e5]
         if not valid_indices:
             logger.warning("All evaluations failed (stress=1e6). Check FreeCAD/FEM setup.")
             return np.zeros(self.latent_dim), [1e6, 1.0]
@@ -273,7 +273,7 @@ class DesignOptimizer:
         out_path.mkdir(parents=True, exist_ok=True)
 
         # Exclude obviously failed evaluations (FEM returned sentinel 1e6)
-        valid_idx = [i for i, y in enumerate(self.y_history) if y[0] < 1e5]
+        valid_idx = [i for i, y in enumerate(self.y_history) if 0.0 < y[0] < 1e5]
         if not valid_idx:
             logger.warning("No valid evaluations to save.")
             json.dump({"pareto_front": [], "history_y": [], "best_bbox": None},
