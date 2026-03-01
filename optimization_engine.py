@@ -52,6 +52,14 @@ class BridgeEvaluator:
             logger.warning(f"Skipping FEM (degenerate geometry): h={h_mm:.2f} r={r_mm:.2f}, r/h={r_mm/h_mm:.2f}")
             return {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
 
+        # Fix 2: holes with r < 2 mm have fewer than ~12 elements around their
+        # circumference with the 1 mm mesh floor (2πr/1mm ≈ 4–12 elements).
+        # Below that threshold Gmsh produces degenerate elements → CalculiX
+        # returns null results.  Treat as solid beam instead.
+        if 0.5 < r_mm < 2.0:
+            logger.info(f"Small hole r={r_mm:.2f}mm → treating as solid (mesh too coarse to resolve hole)")
+            r_mm = 0.0
+
         logger.info(f"Running FEM evaluation: {geom} h={h_mm:.2f} r={r_mm:.2f}")
         
         result = freecad_bridge.run_variant(
@@ -238,7 +246,10 @@ class DesignOptimizer:
             stress_limit = cfg.get("yield_mpa", max_s)
             stress_penalty = 5e5 if stress > stress_limit else 0.0
 
-            val = (w_s * stress + w_c * compliance + w_m * mass + stress_penalty + vol_penalty + conn_penalty)
+            # vol/conn penalties intentionally excluded: FEM uses (h,r) from
+            # parameter_head, not the voxel. Penalising voxel connectivity hides
+            # good FEM results behind irrelevant structural checks.
+            val = (w_s * stress + w_c * compliance + w_m * mass + stress_penalty)
             return val, bbox
 
         else:
@@ -303,6 +314,84 @@ class DesignOptimizer:
 
         return best_candidate, obj_value
 
+    def optimize_step_physical(self):
+        """Fix 3: BO directly in 2D (h_mm, r_mm) physical space.
+
+        Bypasses the 16D latent space entirely.  The GP fits on actual FEM
+        evaluations normalised to [0, 1].  FEM only uses (h, r) — there is no
+        reason to search a 16-dimensional latent space.
+
+        Returns (params_dict, objective_float).
+        """
+        cfg = self.sim_cfg
+        w_s = cfg.get("w_stress",     1.0)
+        w_c = cfg.get("w_compliance", 0.1)
+        w_m = cfg.get("w_mass",       0.01)
+        geom = cfg.get("geometry_type", "cantilever")
+
+        H_MIN, H_MAX = 5.0, 20.0
+        R_MIN, R_MAX = 0.0,  7.0
+
+        # Gather clean (h, r, obj) from every successful FEM run so far.
+        pts = []
+        for entry in self.fem_evaluator.evaluation_history:
+            p  = entry["parameters"]
+            rs = entry["results"]
+            h   = float(p.get("h_mm", 10.0))
+            rr  = float(p.get("r_mm",  0.0))
+            stress = float(rs.get("stress",     1e6))
+            comp   = float(rs.get("compliance", 1e6))
+            mass   = float(rs.get("mass",       1.0))
+            obj    = w_s * stress + w_c * comp + w_m * mass
+            pts.append((h, rr, obj))
+
+        if len(pts) < 2 or not BOTORCH_AVAILABLE:
+            # Too few points for a GP → random draw in physical space.
+            h  = float(np.random.uniform(H_MIN, H_MAX))
+            rr = float(np.random.uniform(0.0, h * 0.35))
+        else:
+            # Normalise to [0, 1] so GP length-scale priors are meaningful.
+            train_X = torch.tensor(
+                [[(h  - H_MIN) / (H_MAX - H_MIN),
+                  (rr - R_MIN) / (R_MAX - R_MIN)]
+                 for h, rr, _ in pts],
+                dtype=torch.float64,
+            ).to(botorch_device)
+            # Negate: BoTorch maximises, we minimise objective.
+            train_Y = torch.tensor(
+                [[-obj] for _, _, obj in pts],
+                dtype=torch.float64,
+            ).to(botorch_device)
+
+            gp  = SingleTaskGP(train_X, train_Y)
+            mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
+            fit_gpytorch_mll(mll)
+
+            acq    = UpperConfidenceBound(gp, beta=0.1)
+            bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]],
+                                   dtype=torch.float64).to(botorch_device)
+            cand, _ = optimize_acqf(
+                acq, bounds=bounds, q=1, num_restarts=10, raw_samples=512,
+            )
+            h  = float(cand[0, 0]) * (H_MAX - H_MIN) + H_MIN
+            rr = float(cand[0, 1]) * (R_MAX - R_MIN) + R_MIN
+
+        params = {"h_mm": h, "r_mm": rr, "geometry": geom}
+        result = self.fem_evaluator.evaluate(params)
+        stress = float(result.get("stress",     1e6))
+        comp   = float(result.get("compliance", 1e6))
+        mass   = float(result.get("mass",       1.0))
+        obj    = w_s * stress + w_c * comp + w_m * mass
+
+        # Keep x/y history in sync for save_results compatibility.
+        # Use zeros as a placeholder latent vector for Stage-2 physical evals.
+        self.x_history.append(np.zeros(self.latent_dim))
+        self.y_history.append(obj)
+        if obj < min(self.y_history[:-1], default=float("inf")):
+            logger.info(f"  Physical BO new best: obj={obj:.2f}  h={h:.2f}  r={rr:.2f}")
+
+        return params, obj
+
     def _random_search_step(self, n_candidates=20):
         best_obj = float('inf')
         best_z = None
@@ -356,39 +445,100 @@ class DesignOptimizer:
             if obj == min(self.y_history): self.best_bbox = bbox
             if (i+1) % 10 == 0: logger.info(f"  Stage 1: {i+1}/100 (Best: {min(self.y_history):.4f})")
 
-        logger.info(f"Entering Stage 2: BO Refinement...")
-        self.initialize_search(n_init_points=0)
-        best_obj = min(self.y_history)
-        best_z = self.x_history[np.argmin(self.y_history)]
+        # Stage 2: Fix 3 — BO directly in 2D (h, r) physical space.
+        # FEM only uses (h, r); the 16-D latent space adds no information here.
+        logger.info("Entering Stage 2: Physical BO in (h, r) space...")
+        cfg = self.sim_cfg
+        w_s = cfg.get("w_stress",     1.0)
+        w_c = cfg.get("w_compliance", 0.1)
+        w_m = cfg.get("w_mass",       0.01)
+
+        # Seed best_obj from all successful FEM runs already collected.
+        if self.fem_evaluator.evaluation_history:
+            best_obj = min(
+                w_s * e["results"]["stress"] +
+                w_c * e["results"]["compliance"] +
+                w_m * e["results"].get("mass", 1.0)
+                for e in self.fem_evaluator.evaluation_history
+            )
+        else:
+            best_obj = min(self.y_history)
+
+        best_params = {"h_mm": 10.0, "r_mm": 0.0}
         for iteration in range(n_iterations):
-            z_cand, obj_cand = self.optimize_step()
+            params, obj_cand = self.optimize_step_physical()
             if obj_cand < best_obj:
-                best_obj = obj_cand
-                best_z = z_cand
-                logger.info(f"New global best (Iter {iteration+1}): {best_obj:.4f}")
+                best_obj   = obj_cand
+                best_params = params
+                logger.info(
+                    f"New global best (Iter {iteration+1}): {best_obj:.4f}  "
+                    f"h={params['h_mm']:.2f}  r={params['r_mm']:.2f}"
+                )
+
+        logger.info(f"Optimization complete!")
+        logger.info(f"Best design objective: {best_obj:.4f}")
+        logger.info(f"Best parameters: h={best_params['h_mm']:.2f}mm  r={best_params['r_mm']:.2f}mm")
+
+        # Return the best latent z from Stage 1 history (for STL export compat).
+        stage1_best_idx = int(np.argmin(self.y_history[:100])) if len(self.y_history) >= 100 else int(np.argmin(self.y_history))
+        best_z = self.x_history[stage1_best_idx]
         return best_z, best_obj
 
     def save_results(self, output_dir: str = "./optimization_results"):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        y_np = np.array(self.y_history)
-        valid_mask = y_np < 100000.0 
-        best_idx = np.where(valid_mask, y_np, np.inf).argmin() if np.any(valid_mask) else np.argmin(self.y_history)
-        best_z = self.x_history[best_idx]
-        best_obj = float(self.y_history[best_idx])
+        cfg = self.sim_cfg
+        w_s = cfg.get("w_stress",     1.0)
+        w_c = cfg.get("w_compliance", 0.1)
+        w_m = cfg.get("w_mass",       0.01)
+
+        # Find true best from clean FEM evaluations (physical-BO source of truth).
+        best_fem_entry = None
+        best_fem_obj   = float("inf")
+        for entry in self.fem_evaluator.evaluation_history:
+            rs  = entry["results"]
+            obj = (w_s * rs.get("stress", 1e6) +
+                   w_c * rs.get("compliance", 1e6) +
+                   w_m * rs.get("mass", 1.0))
+            if obj < best_fem_obj:
+                best_fem_obj   = obj
+                best_fem_entry = entry
+
+        # Fall back to y_history best for latent-z export.
+        y_np      = np.array(self.y_history)
+        valid_mask = y_np < 100000.0
+        best_idx   = int(np.where(valid_mask, y_np, np.inf).argmin()) if np.any(valid_mask) else int(np.argmin(y_np))
+        best_z     = self.x_history[best_idx]
+        best_obj   = float(best_fem_obj if best_fem_entry else y_np[best_idx])
+
         results = {
-            "x_history": [x.tolist() for x in self.x_history],
-            "y_history": [float(y) for y in self.y_history],
-            "best_x": best_z.tolist(), "best_y": best_obj, "best_bbox": self.best_bbox
+            "x_history":   [x.tolist() for x in self.x_history],
+            "y_history":   [float(y) for y in self.y_history],
+            "best_x":      best_z.tolist(),
+            "best_y":      best_obj,
+            "best_bbox":   self.best_bbox,
+            "best_params": best_fem_entry["parameters"] if best_fem_entry else {},
+            "best_fem":    best_fem_entry["results"]    if best_fem_entry else {},
         }
-        with open(Path(output_dir) / "optimization_history.json", 'w') as f: json.dump(results, f, indent=2)
+        with open(Path(output_dir) / "optimization_history.json", 'w') as f:
+            json.dump(results, f, indent=2)
         self.fem_evaluator.save_history(Path(output_dir) / "fem_evaluations.json")
+
+        if best_fem_entry:
+            p = best_fem_entry["parameters"]
+            r = best_fem_entry["results"]
+            logger.info(
+                f"Best FEM design: h={p.get('h_mm',0):.2f}mm  r={p.get('r_mm',0):.2f}mm  "
+                f"stress={r.get('stress',0):.1f} MPa  obj={best_fem_obj:.2f}"
+            )
+
         try:
             import trimesh
             verts, faces = self.decode_to_mesh(best_z, bbox=self.best_bbox)
             if len(faces) > 0:
                 mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
                 mesh.export(str(Path(output_dir) / "best_design.stl"))
-        except Exception as e: logger.error(f"STL export failed: {e}")
+        except Exception as e:
+            logger.error(f"STL export failed: {e}")
         return results
 
 
