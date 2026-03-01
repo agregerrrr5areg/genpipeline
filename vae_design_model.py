@@ -6,12 +6,14 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.tensorboard import SummaryWriter
 from torch.amp import autocast, GradScaler
 import numpy as np
+from collections import namedtuple
 from pathlib import Path
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+VAEOutput = namedtuple("VAEOutput", ["x_recon", "mu", "logvar", "perf_pred", "param_pred"])
 
 class Conv3DBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
@@ -40,25 +42,37 @@ class ConvTranspose3DBlock(nn.Module):
 
 class DesignVAE(nn.Module):
     """
-    3D VAE for 64³ voxel grids.
+    3D VAE for voxel grids.
 
-    Encoder: 64→32→16→8→4, channels 1→32→64→128→256
-    Decoder: 4→8→16→32→64, channels 256→128→64→32→16→1
+    Encoder: D→D/2→D/4→D/8→D/16, channels 1→32→64→128→256
+    Decoder: D/16→D/8→D/4→D/2→D, channels 256→128→64→32→16→1
+
+    input_shape must be divisible by 2**4 = 16.
 
     All layers run on GPU. nn.Linear (2D matmul) is safe on Blackwell RTX 5080
     — the cuBLAS bug only affects strided batched GEMM (dim > 2, batch ≥ 2).
     """
 
-    _ENC_CH  = 256        # bottleneck channels
-    _ENC_SP  = 4          # spatial dim after 4× stride-2 conv on 64³ input
+    _ENC_CH    = 256   # bottleneck channels
+    _N_CONV    = 4     # number of stride-2 conv layers
     _FC_HIDDEN = 1024
 
-    def __init__(self, input_shape=(64, 64, 64), latent_dim=32):
+    def __init__(self, input_shape=(64, 64, 64), latent_dim=32, pos_weight: float = 30.0):
         super().__init__()
         self.latent_dim  = latent_dim
         self.input_shape = input_shape
+        self.pos_weight  = pos_weight
 
-        flat = self._ENC_CH * self._ENC_SP ** 3  # 256*64 = 16384
+        stride = 2 ** self._N_CONV
+        if input_shape[0] % stride != 0:
+            raise ValueError(
+                f"input_shape[0]={input_shape[0]} must be divisible by {stride} "
+                f"(2^{self._N_CONV} stride-2 conv layers)."
+            )
+        enc_sp = input_shape[0] // stride   # spatial dim at bottleneck
+        self._enc_sp = enc_sp
+
+        flat = self._ENC_CH * enc_sp ** 3
 
         # ── Encoder ──────────────────────────────────────────────────────────
         self.encoder = nn.Sequential(
@@ -114,7 +128,7 @@ class DesignVAE(nn.Module):
     def decode_logits(self, z):
         with torch.autocast('cuda', enabled=False):
             h = self.fc_decode(z.float())
-        h = h.view(-1, self._ENC_CH, self._ENC_SP, self._ENC_SP, self._ENC_SP)
+        h = h.view(-1, self._ENC_CH, self._enc_sp, self._enc_sp, self._enc_sp)
         return self.decoder(h)
 
     def decode(self, z):
@@ -128,7 +142,7 @@ class DesignVAE(nn.Module):
         with torch.autocast('cuda', enabled=False):
             perf_pred  = self.performance_head(z.float())
             param_pred = self.parameter_head(z.float())
-        return x_recon, mu, logvar, perf_pred, param_pred
+        return VAEOutput(x_recon, mu, logvar, perf_pred, param_pred)
 
     def predict_performance(self, z):
         return self.performance_head(z.float())
@@ -169,10 +183,11 @@ class VAETrainer:
             self.optimizer.zero_grad(set_to_none=True)
 
             with autocast('cuda', dtype=torch.bfloat16):
-                x_rec, mu, logvar, p_pred, pr_pred = self.model(geom)
+                out = self.model(geom)
+                x_rec, mu, logvar, p_pred, pr_pred = out
                 loss_rec = F.binary_cross_entropy_with_logits(
                     x_rec, geom,
-                    pos_weight=torch.tensor([30.0], device=self.device),
+                    pos_weight=torch.tensor([self.model.pos_weight], device=self.device),
                 )
                 # KL in float32 for stability
                 mu_f  = mu.float();  lv_f = logvar.float()

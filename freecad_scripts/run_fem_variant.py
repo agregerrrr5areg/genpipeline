@@ -72,9 +72,10 @@ def find_nearest_face(shape, point_target):
             best_i = i
     return f"Face{best_i}"
 
-def find_face(shape, normal_target, tol=0.05):
+def find_faces(shape, normal_target, tol=0.05):
     import FreeCAD as App
-    best_i, best_dot = 0, -2.0
+    faces = []
+    normal_target = App.Vector(*normal_target)
     for i, face in enumerate(shape.Faces, 1):
         try:
             u0 = (face.ParameterRange[0] + face.ParameterRange[1]) / 2
@@ -82,11 +83,9 @@ def find_face(shape, normal_target, tol=0.05):
             n = face.normalAt(u0, v0)
         except Exception:
             n = face.normalAt(0, 0)
-        dot = n.dot(normal_target)
-        if dot > best_dot:
-            best_dot = dot
-            best_i = i
-    return f"Face{best_i}"
+        if n.dot(normal_target) > 1.0 - tol:
+            faces.append(f"Face{i}")
+    return faces
 
 def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
     if cfg is None: cfg = {}
@@ -100,27 +99,20 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
 
     # ── Material definition ───────────────────────────────────────────────
     mat = ObjectsFem.makeMaterialSolid(doc, "FemMaterialSolid")
-    e_mpa = cfg.get('E_mpa', 210000)
-    rho_kg_m3 = cfg.get('density_kg_m3', 7900)
+    e_mpa = cfg.get('E_mpa', 2300) # Plastic ABS default
+    rho_kg_m3 = cfg.get('density_kg_m3', 1050)
     mat.Material = {
         "Name":          "CalculiX-Custom",
         "YoungsModulus": f"{e_mpa} MPa",
-        "PoissonRatio":  str(cfg.get('poisson', 0.30)),
+        "PoissonRatio":  str(cfg.get('poisson', 0.35)),
         "Density":       f"{rho_kg_m3} kg/m^3",
-        "ThermalConductivity": f"{cfg.get('thermal_conductivity_w_mk', 50.0)} W/m/K",
-        "SpecificHeat":  f"{cfg.get('specific_heat_j_kgk', 490.0)} J/kg/K",
-        "ThermalExpansionCoefficient": str(cfg.get('thermal_expansion_coeff', 1.2e-5)),
     }
     analysis.addObject(mat)
 
     # ── Mesh ─────────────────────────────────────────────────────────────
-    base_length = 3.0 if e_mpa > 10000 else 1.5
-    if r_mm > 0.5:
-        base_length = min(base_length, max(r_mm / 2.0, 1.0))
-
     mesh_obj = ObjectsFem.makeMeshGmsh(doc, "FEMMeshGmsh")
     mesh_obj.Shape = shape_obj
-    mesh_obj.CharacteristicLengthMax = f"{base_length} mm"
+    mesh_obj.CharacteristicLengthMax = "3.5 mm" # Coarser for speed/stability
     mesh_obj.ElementOrder = "2nd"
     analysis.addObject(mesh_obj)
     doc.recompute()
@@ -131,33 +123,27 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
     doc.recompute()
 
     # ── Constraints ──────────────────────────────────────────────────────
-    fixed_pt = cfg.get("fixed_point")
-    if fixed_pt:
-        target_face = find_nearest_face(shape_obj.Shape, fixed_pt)
-    else:
-        fixed_norm = cfg.get("fixed_face_normal", [-1, 0, 0])
-        target_face = find_face(shape_obj.Shape, App.Vector(*fixed_norm))
-        
-    fixed = ObjectsFem.makeConstraintFixed(doc, "FEMConstraintFixed")
-    fixed.References = [(shape_obj, target_face)]
-    analysis.addObject(fixed)
+    fixed_norm = cfg.get("fixed_face_normal", [-1, 0, 0])
+    fixed_faces = find_faces(shape_obj.Shape, fixed_norm)
+    
+    if fixed_faces:
+        fixed = ObjectsFem.makeConstraintFixed(doc, "FEMConstraintFixed")
+        fixed.References = [(shape_obj, f) for f in fixed_faces]
+        analysis.addObject(fixed)
 
-    load_pt = cfg.get("load_point")
-    if load_pt:
-        target_load_face = find_nearest_face(shape_obj.Shape, load_pt)
-    else:
-        load_norm = cfg.get("load_face_normal", [1, 0, 0])
-        target_load_face = find_face(shape_obj.Shape, App.Vector(*load_norm))
+    load_norm = cfg.get("load_face_normal", [1, 0, 0])
+    load_faces = find_faces(shape_obj.Shape, load_norm)
     
-    # Direction face for the load
     force_dir = cfg.get("force_direction", [0, 0, -1])
-    down_face  = find_face(shape_obj.Shape, App.Vector(*force_dir))
+    down_faces = find_faces(shape_obj.Shape, force_dir)
     
-    force = ObjectsFem.makeConstraintForce(doc, "FEMConstraintForce")
-    force.References = [(shape_obj, target_load_face)]
-    force.Force      = App.Units.Quantity(f"{cfg.get('force_n', 1000)} N")
-    force.Direction  = (shape_obj, [down_face])
-    analysis.addObject(force)
+    if load_faces:
+        force = ObjectsFem.makeConstraintForce(doc, "FEMConstraintForce")
+        force.References = [(shape_obj, f) for f in load_faces]
+        force.Force      = App.Units.Quantity(f"{cfg.get('force_n', 1000)} N")
+        if down_faces:
+            force.Direction  = (shape_obj, [down_faces[0]])
+        analysis.addObject(force)
 
     # ── Solver ───────────────────────────────────────────────────────────
     solver = ObjectsFem.makeSolverCalculiXCcxTools(doc, "SolverCcxTools")
@@ -169,6 +155,7 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
     doc.recompute()
 
     # ── Results ──────────────────────────────────────────────────────────
+    doc.recompute()
     results = {
         "stress_max": 0.0,
         "compliance": 0.0,
@@ -176,12 +163,25 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
         "parameters": {"h_mm": h_mm, "r_mm": r_mm},
     }
 
-    for obj in doc.Objects:
-        if "Result" in obj.TypeId or hasattr(obj, "vonMises"):
+    # Find the analysis object's results
+    for obj in analysis.Group:
+        if obj.TypeId == "Fem::FemResultObject" or hasattr(obj, "vonMises"):
             if hasattr(obj, "vonMises") and obj.vonMises:
                 results["stress_max"] = float(max(obj.vonMises))
             if hasattr(obj, "DisplacementLengths") and obj.DisplacementLengths:
-                results["compliance"] = float(sum(obj.DisplacementLengths))
+                # Use max displacement as a proxy for compliance if needed, 
+                # or sum for total strain energy proxy
+                results["compliance"] = float(max(obj.DisplacementLengths))
+            print(f"[run_fem_variant] Found results in {obj.Name}: stress={results['stress_max']:.2f}")
+
+    if results["stress_max"] == 0.0:
+        # Fallback: check all objects in doc
+        for obj in doc.Objects:
+            if "Result" in obj.TypeId and hasattr(obj, "vonMises") and obj.vonMises:
+                results["stress_max"] = float(max(obj.vonMises))
+                if hasattr(obj, "DisplacementLengths"):
+                    results["compliance"] = float(max(obj.DisplacementLengths))
+                print(f"[run_fem_variant] Fallback found results in {obj.Name}: stress={results['stress_max']:.2f}")
 
     vol_mm3 = shape_obj.Shape.Volume
     results["mass"] = float(vol_mm3 * (rho_kg_m3 / 1e9))

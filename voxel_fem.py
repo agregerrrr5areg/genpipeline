@@ -18,35 +18,51 @@ from typing import Dict, Optional
 
 import numpy as np
 
-
-class _NumpyEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        return super().default(obj)
+from pipeline_utils import NumpyEncoder as _NumpyEncoder, smooth_voxels, FEM_SENTINEL, FEM_VALID_THRESHOLD, is_valid_fem_result
 
 logger = logging.getLogger(__name__)
 
 # ── CalculiX executable discovery ─────────────────────────────────────────────
-CCX_SEARCH_PATHS = [
-    "/mnt/c/Users/PC-PC/AppData/Local/Programs/FreeCAD 1.0/bin/ccx.exe",
-    "/mnt/c/Program Files/FreeCAD 1.0/bin/ccx.exe",
-    "/mnt/c/Program Files (x86)/FreeCAD 1.0/bin/ccx.exe",
-    "ccx",   # system PATH fallback
-]
+
+def _discover_ccx_paths() -> list:
+    """
+    Build a prioritised list of CalculiX executable candidates:
+      1. CCX_PATH env var (explicit override)
+      2. Native Linux ccx on PATH
+      3. All Windows FreeCAD installs found via glob (any username)
+    """
+    candidates = []
+
+    env_path = os.environ.get("CCX_PATH")
+    if env_path:
+        candidates.append(env_path)
+
+    if shutil.which("ccx"):
+        candidates.append(shutil.which("ccx"))
+
+    # Glob covers any Windows username and any FreeCAD version
+    import glob
+    for pattern in [
+        "/mnt/c/Users/*/AppData/Local/Programs/FreeCAD*/bin/ccx.exe",
+        "/mnt/c/Program Files/FreeCAD*/bin/ccx.exe",
+        "/mnt/c/Program Files (x86)/FreeCAD*/bin/ccx.exe",
+    ]:
+        candidates.extend(glob.glob(pattern))
+
+    return candidates
 
 
 def find_ccx() -> Optional[str]:
-    for p in CCX_SEARCH_PATHS:
+    """Return the first available CalculiX executable, or None."""
+    for p in _discover_ccx_paths():
         if p.endswith(".exe"):
             if Path(p).exists():
+                logger.info(f"[VoxelFEM] Found ccx: {p}")
                 return p
-        elif shutil.which(p):
+        elif shutil.which(p) or Path(p).exists():
+            logger.info(f"[VoxelFEM] Found ccx: {p}")
             return p
+    logger.warning("[VoxelFEM] CalculiX (ccx) not found on this system.")
     return None
 
 
@@ -239,18 +255,30 @@ class VoxelHexMesher:
                 timeout=timeout, cwd=str(work_dir),
             )
             if proc.returncode != 0:
-                logger.warning(f"[VoxelFEM] ccx returned {proc.returncode}")
+                logger.warning(f"[VoxelFEM] ccx returned non-zero exit code {proc.returncode}")
                 logger.debug(f"[VoxelFEM] stderr: {proc.stderr[:500]}")
+                return {
+                    "stress_max": FEM_SENTINEL, "displacement_max": FEM_SENTINEL,
+                    "compliance": FEM_SENTINEL, "failure_reason": "ccx_error",
+                }
         except subprocess.TimeoutExpired:
             logger.error(f"[VoxelFEM] ccx timed out after {timeout}s")
-            return {"stress_max": 0.0, "displacement_max": 0.0, "compliance": 0.0}
+            return {
+                "stress_max": FEM_SENTINEL, "displacement_max": FEM_SENTINEL,
+                "compliance": FEM_SENTINEL, "failure_reason": "timeout",
+            }
 
         frd_path = work_dir / f"{stem}.frd"
         if not frd_path.exists():
             logger.error(f"[VoxelFEM] .frd not found: {frd_path}")
-            return {"stress_max": 0.0, "displacement_max": 0.0, "compliance": 0.0}
+            return {
+                "stress_max": FEM_SENTINEL, "displacement_max": FEM_SENTINEL,
+                "compliance": FEM_SENTINEL, "failure_reason": "no_frd",
+            }
 
-        return VoxelHexMesher._parse_frd(str(frd_path))
+        result = VoxelHexMesher._parse_frd(str(frd_path))
+        result["failure_reason"] = None
+        return result
 
     @staticmethod
     def _parse_frd(frd_path: str) -> Dict[str, float]:
@@ -321,7 +349,10 @@ class VoxelHexMesher:
                                 pass
         except OSError as e:
             logger.error(f"[VoxelFEM] Could not read .frd: {e}")
-            return {"stress_max": 0.0, "displacement_max": 0.0, "compliance": 0.0}
+            return {
+                "stress_max": FEM_SENTINEL, "displacement_max": FEM_SENTINEL,
+                "compliance": FEM_SENTINEL, "failure_reason": "no_frd",
+            }
 
         stress_max   = float(max(stresses))      if stresses      else 0.0
         disp_max     = float(max(displacements)) if displacements else 0.0
@@ -377,7 +408,6 @@ class VoxelFEMEvaluator:
         bbox:      optional physical bounding box dict
         """
         import torch
-        from scipy.ndimage import gaussian_filter
 
         device = next(vae_model.parameters()).device
 
@@ -386,8 +416,7 @@ class VoxelFEMEvaluator:
             voxels = vae_model.decode(z_t).cpu().numpy().squeeze()
 
         # Organic density filter (matches DesignOptimizer.decode_latent_to_geometry)
-        voxels = gaussian_filter(voxels, sigma=0.5)
-        voxels = 1.0 / (1.0 + np.exp(-15.0 * (voxels - 0.5)))
+        voxels = smooth_voxels(voxels)
 
         self._counter += 1
         inp_path = str(self.output_dir / f"voxel_fem_{self._counter:04d}.inp")
@@ -402,12 +431,18 @@ class VoxelFEMEvaluator:
             )
         except ValueError as e:
             logger.warning(f"[VoxelFEM] Mesh failed: {e}")
-            return {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
+            return {"stress": FEM_SENTINEL, "compliance": FEM_SENTINEL, "mass": 1.0,
+                    "failure_reason": "mesh_error"}
 
         if self.ccx_cmd is None:
-            return {"stress": 1e6, "compliance": 1e6, "mass": 1.0}
+            return {"stress": FEM_SENTINEL, "compliance": FEM_SENTINEL, "mass": 1.0,
+                    "failure_reason": "no_ccx"}
 
         fem_res = VoxelHexMesher.run_ccx(inp_path, ccx_cmd=self.ccx_cmd)
+        # Propagate failure sentinel from run_ccx
+        if not is_valid_fem_result({"stress": fem_res["stress_max"]}):
+            return {"stress": fem_res["stress_max"], "compliance": fem_res["compliance"],
+                    "mass": 1.0, "failure_reason": fem_res.get("failure_reason", "fem_failed")}
         stress     = fem_res["stress_max"]
         compliance = fem_res["compliance"]
 
@@ -437,7 +472,8 @@ class VoxelFEMEvaluator:
         for p in param_list:
             z = p.get("z")
             if z is None:
-                results.append({"stress": 1e6, "compliance": 1e6, "mass": 1.0, "parameters": p})
+                results.append({"stress": FEM_SENTINEL, "compliance": FEM_SENTINEL,
+                                 "mass": 1.0, "failure_reason": "no_z", "parameters": p})
                 continue
             res = self.evaluate(np.asarray(z), self.vae_model)
             res["parameters"] = p

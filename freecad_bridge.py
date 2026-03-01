@@ -25,6 +25,7 @@ import argparse
 import concurrent.futures
 import json
 import logging
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -35,17 +36,35 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 # ── FreeCAD search paths (WSL /mnt/c/ view of Windows C:\) ────────────────────
-FREECAD_SEARCH_PATHS = [
-    # Per-user install (FreeCAD 1.0 on this machine)
-    "/mnt/c/Users/PC-PC/AppData/Local/Programs/FreeCAD 1.0/bin/freecad.exe",
-    # System-wide installs
-    "/mnt/c/Program Files/FreeCAD 1.0/bin/freecad.exe",
-    "/mnt/c/Program Files (x86)/FreeCAD 1.0/bin/freecad.exe",
-    # FreeCAD 0.x headless
-    "/mnt/c/Program Files/FreeCAD 0.21/bin/FreeCADCmd.exe",
-    "/mnt/c/Program Files/FreeCAD 0.20/bin/FreeCADCmd.exe",
-    "/mnt/c/Program Files (x86)/FreeCAD 0.21/bin/FreeCADCmd.exe",
-]
+
+def _discover_freecad_paths() -> list:
+    """
+    Build a prioritised list of FreeCAD executable candidates:
+      1. FREECAD_PATH env var (explicit override — directory containing bin/)
+      2. All per-user and system-wide FreeCAD installs found via glob (any username, any version)
+    """
+    import glob
+    candidates = []
+
+    env_path = os.environ.get("FREECAD_PATH")
+    if env_path:
+        for exe in ("freecad.exe", "FreeCADCmd.exe"):
+            candidates.append(str(Path(env_path) / "bin" / exe))
+
+    for pattern in [
+        "/mnt/c/Users/*/AppData/Local/Programs/FreeCAD*/bin/freecad.exe",
+        "/mnt/c/Users/*/AppData/Local/Programs/FreeCAD*/bin/FreeCADCmd.exe",
+        "/mnt/c/Program Files/FreeCAD*/bin/freecad.exe",
+        "/mnt/c/Program Files/FreeCAD*/bin/FreeCADCmd.exe",
+        "/mnt/c/Program Files (x86)/FreeCAD*/bin/FreeCADCmd.exe",
+    ]:
+        candidates.extend(glob.glob(pattern))
+
+    return candidates
+
+
+# Kept for backwards-compatibility (tests etc. may reference it)
+FREECAD_SEARCH_PATHS = _discover_freecad_paths()
 
 EXTRACTOR_SCRIPT = Path(__file__).parent / "freecad_scripts" / "extract_fem.py"
 # Windows Temp is accessible from both Windows and WSL
@@ -110,15 +129,17 @@ def find_freecad_cmd(override: str = None) -> str:
             f"Check your --freecad-path argument."
         )
 
-    for path in FREECAD_SEARCH_PATHS:
+    discovered = _discover_freecad_paths()
+    for path in discovered:
         if Path(path).exists():
             logger.info(f"Found FreeCAD: {path}")
             return path
 
     raise FileNotFoundError(
-        "FreeCADCmd.exe not found on Windows filesystem.\n"
+        "FreeCADCmd.exe / freecad.exe not found on Windows filesystem.\n"
         "Install FreeCAD on Windows (https://www.freecad.org) or use --freecad-path.\n"
-        "Searched:\n" + "\n".join(f"  {p}" for p in FREECAD_SEARCH_PATHS)
+        "You can also set the FREECAD_PATH env var to the FreeCAD install directory.\n"
+        "Searched:\n" + "\n".join(f"  {p}" for p in (discovered or ["(no candidates found)"]))
     )
 
 

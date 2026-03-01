@@ -15,18 +15,66 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+def validate_config(cfg: dict) -> list:
+    """
+    Validate pipeline configuration dict.
+
+    Returns a list of human-readable error strings.  An empty list means the
+    configuration is valid.
+    """
+    errors = []
+
+    required_keys = {
+        'voxel_resolution': int,
+        'latent_dim': int,
+        'batch_size': int,
+        'epochs': int,
+        'learning_rate': float,
+        'beta_vae': float,
+        'n_optimization_iterations': int,
+    }
+    for key, expected_type in required_keys.items():
+        if key not in cfg:
+            errors.append(f"Missing required key: '{key}'")
+        elif not isinstance(cfg[key], (int, float)):
+            errors.append(f"'{key}' must be a number, got {type(cfg[key]).__name__}")
+
+    if 'beta_vae' in cfg:
+        v = cfg['beta_vae']
+        if not (0 < v <= 10):
+            errors.append(f"'beta_vae'={v} out of range (0, 10]")
+
+    if 'batch_size' in cfg and cfg.get('batch_size', 1) <= 0:
+        errors.append(f"'batch_size' must be > 0, got {cfg['batch_size']}")
+
+    if 'epochs' in cfg and cfg.get('epochs', 1) <= 0:
+        errors.append(f"'epochs' must be > 0, got {cfg['epochs']}")
+
+    if 'voxel_resolution' in cfg:
+        res = cfg['voxel_resolution']
+        if res % 16 != 0:
+            errors.append(
+                f"'voxel_resolution'={res} must be divisible by 16 "
+                f"(VAE uses 4× stride-2 conv layers)"
+            )
+
+    return errors
+
+
 class PipelineConfig:
     def __init__(self, config_path: str = None):
         self.config = {
             'freecad_project_dir': './freecad_designs',
             'fem_data_output': './fem_data',
             'voxel_resolution': 64,
+            'input_shape': [64, 64, 64],
             'use_sdf': False,
             'latent_dim': 32,
             'batch_size': 32,
             'epochs': 300,
             'learning_rate': 0.0003,
-            'beta_vae': 0.05,
+            'beta_vae': 1.0,
+            'pos_weight': 30.0,
             'device': 'cuda' if torch.cuda.is_available() else 'cpu',
             'n_optimization_iterations': 1000,
             'output_dir': './optimization_results'
@@ -39,7 +87,14 @@ class PipelineConfig:
         with open(config_path, 'r') as f:
             loaded = json.load(f)
             self.config.update(loaded)
+        # Keep input_shape in sync with voxel_resolution
+        if 'voxel_resolution' in loaded and 'input_shape' not in loaded:
+            res = self.config['voxel_resolution']
+            self.config['input_shape'] = [res, res, res]
         logger.info(f"Loaded config from {config_path}")
+        errors = validate_config(self.config)
+        for err in errors:
+            logger.warning(f"Config validation: {err}")
 
     def save(self, config_path: str):
         Path(config_path).parent.mkdir(parents=True, exist_ok=True)
@@ -88,7 +143,7 @@ def step_3_train_vae(config: PipelineConfig, train_loader, val_loader):
         logger.error("vae_design_model.py not found")
         return None
     device = config['device']
-    model = DesignVAE(input_shape=(64, 64, 64), latent_dim=config['latent_dim'])
+    model = DesignVAE(input_shape=tuple(config.config.get('input_shape', [64, 64, 64])), latent_dim=config['latent_dim'])
     trainer = VAETrainer(model, train_loader, val_loader, device=device,
                         lr=config['learning_rate'], beta=config['beta_vae'],
                         epochs=config['epochs'])
@@ -109,7 +164,7 @@ def step_4_optimize_designs(config: PipelineConfig):
 
     device = config['device']
     checkpoint = torch.load('checkpoints/vae_best.pth', map_location=device, weights_only=False)
-    vae = DesignVAE(input_shape=(64, 64, 64), latent_dim=config['latent_dim'])
+    vae = DesignVAE(input_shape=tuple(config.config.get('input_shape', [64, 64, 64])), latent_dim=config['latent_dim'])
     vae.load_state_dict(checkpoint['model_state_dict'])
     vae = vae.to(device)
 
@@ -143,7 +198,7 @@ def step_5_export_design(config: PipelineConfig, best_z=None):
 
     device = config['device']
     checkpoint = torch.load('checkpoints/vae_best.pth', map_location=device, weights_only=False)
-    vae = DesignVAE(input_shape=(64, 64, 64), latent_dim=config['latent_dim'])
+    vae = DesignVAE(input_shape=tuple(config.config.get('input_shape', [64, 64, 64])), latent_dim=config['latent_dim'])
     vae.load_state_dict(checkpoint['model_state_dict'])
     vae = vae.to(device)
 
@@ -199,12 +254,16 @@ if __name__ == "__main__":
     parser.add_argument('--step', type=int, choices=[1, 2, 3, 4, 5])
     parser.add_argument('--all', action='store_true')
     parser.add_argument('--n-iter', type=int)
+    parser.add_argument('--epochs', type=int, help='Override epochs for step 3')
+    parser.add_argument('--batch-size', type=int, help='Override batch_size for step 3')
     parser.add_argument('--results-dir', type=str, default=None,
                         help='Override output_dir for step 5 export')
     args = parser.parse_args()
 
     config = PipelineConfig('pipeline_config.json')
     if args.n_iter: config['n_optimization_iterations'] = args.n_iter
+    if args.epochs: config['epochs'] = args.epochs
+    if args.batch_size: config['batch_size'] = args.batch_size
     if args.results_dir: config['output_dir'] = args.results_dir
 
     if args.all:

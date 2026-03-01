@@ -1,11 +1,15 @@
 # tests/test_voxel_fem.py
 import numpy as np
 import pytest
+import subprocess
+import textwrap
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from voxel_fem import _wsl_to_win, VoxelHexMesher
+from pipeline_utils import FEM_SENTINEL
 
 
 class TestWslToWin:
@@ -99,3 +103,122 @@ class TestVoxelHexMesher:
             if in_node and line.strip():
                 node_count += 1
         assert node_count == 8
+
+
+# ── .frd parser tests ─────────────────────────────────────────────────────────
+
+def _fmt_val(v: float) -> str:
+    """Format a float to exactly 12 chars (CalculiX fixed-width slot)."""
+    return f"{v:12.6E}"
+
+
+def _frd_record(node_id: int, *values) -> str:
+    """Build a CalculiX -1 data record with correct fixed-width layout."""
+    node_str = f"{node_id:10d}"   # 10-char node ID
+    vals_str  = "".join(_fmt_val(v) for v in values)
+    return f" -1{node_str}{vals_str}"
+
+
+# Minimal synthetic .frd: 2 displacement nodes + 1 stress node.
+# Layout matches _parse_frd() exactly: ' -1' prefix, 10-char node ID, 12-char slots.
+_MINIMAL_FRD = "\n".join([
+    "     2C  minimal_test",
+    " -4  DISP        4    1",
+    " -5  D1          1    1    0    0",
+    " -5  D2          1    2    0    0",
+    " -5  D3          1    3    0    0",
+    " -5  ALL         1    0    0    0",
+    _frd_record(1, 1.0e-2, 2.0e-2, 3.0e-2),   # |disp| = sqrt(14)*1e-2
+    _frd_record(2, 4.0e-2, 5.0e-2, 6.0e-2),   # |disp| = sqrt(77)*1e-2
+    " -3",
+    " -4  STRESS      6    1",
+    " -5  SXX         1    4    1    1",
+    " -5  SYY         1    4    1    2",
+    " -5  SZZ         1    4    1    3",
+    " -5  SXY         1    4    1    4",
+    " -5  SYZ         1    4    1    5",
+    " -5  SZX         1    4    1    6",
+    _frd_record(1, 1.0e2, 5.0e1, 2.5e1, 1.0e1, 5.0e0, 0.0),  # vm ≈ 68.9 MPa
+    " -3",
+    "  9999",
+])
+
+
+class TestParseFrd:
+    def test_parse_frd_valid_output(self, tmp_path):
+        frd_file = tmp_path / "test.frd"
+        frd_file.write_text(_MINIMAL_FRD)
+        result = VoxelHexMesher._parse_frd(str(frd_file))
+        assert result["stress_max"] > 0.0, "Expected non-zero stress"
+        assert result["displacement_max"] > 0.0, "Expected non-zero displacement"
+        assert result.get("failure_reason") is None
+
+    def test_parse_frd_malformed_lines(self, tmp_path):
+        """Corrupt displacement and stress lines — should return zeros, not crash."""
+        bad_frd = textwrap.dedent("""\
+             2C  corrupt_test
+            -4  DISP        4    1
+            -5  D1          1    1    0    0
+            -1         1 NOT_A_NUMBER BAD BAD
+            -3
+            -4  STRESS      6    1
+            -5  SXX         1    4    1    1
+            -1         1 @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+            -3
+             9999
+        """)
+        frd_file = tmp_path / "bad.frd"
+        frd_file.write_text(bad_frd)
+        result = VoxelHexMesher._parse_frd(str(frd_file))
+        # Should not raise — returns zeros for malformed content
+        assert isinstance(result, dict)
+        assert result["stress_max"] == 0.0
+        assert result["displacement_max"] == 0.0
+
+    def test_parse_frd_missing_file_returns_sentinel(self, tmp_path):
+        result = VoxelHexMesher._parse_frd(str(tmp_path / "nonexistent.frd"))
+        assert result["stress_max"] == FEM_SENTINEL
+
+
+class TestRunCcxFailureModes:
+    def test_run_ccx_timeout_returns_sentinel(self, tmp_path):
+        """When ccx times out, run_ccx should return sentinel with failure_reason=timeout."""
+        vox = np.ones((4, 4, 4), dtype=np.float32)
+        inp = str(tmp_path / "cube.inp")
+        VoxelHexMesher.voxels_to_inp(vox, output_path=inp)
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ccx", timeout=1)):
+            result = VoxelHexMesher.run_ccx(inp, ccx_cmd="ccx", timeout=1)
+
+        assert result["stress_max"] == FEM_SENTINEL
+        assert result["compliance"] == FEM_SENTINEL
+        assert result["failure_reason"] == "timeout"
+
+    def test_run_ccx_bad_exit_code_returns_sentinel(self, tmp_path):
+        """When ccx exits non-zero, run_ccx should return sentinel with failure_reason=ccx_error."""
+        vox = np.ones((4, 4, 4), dtype=np.float32)
+        inp = str(tmp_path / "cube.inp")
+        VoxelHexMesher.voxels_to_inp(vox, output_path=inp)
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.stderr = "error"
+        with patch("subprocess.run", return_value=mock_proc):
+            result = VoxelHexMesher.run_ccx(inp, ccx_cmd="ccx", timeout=30)
+
+        assert result["stress_max"] == FEM_SENTINEL
+        assert result["failure_reason"] == "ccx_error"
+
+    def test_run_ccx_no_frd_returns_sentinel(self, tmp_path):
+        """When ccx exits 0 but produces no .frd, return sentinel with failure_reason=no_frd."""
+        vox = np.ones((4, 4, 4), dtype=np.float32)
+        inp = str(tmp_path / "cube.inp")
+        VoxelHexMesher.voxels_to_inp(vox, output_path=inp)
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        with patch("subprocess.run", return_value=mock_proc):
+            result = VoxelHexMesher.run_ccx(inp, ccx_cmd="ccx", timeout=30)
+
+        assert result["stress_max"] == FEM_SENTINEL
+        assert result["failure_reason"] == "no_frd"
