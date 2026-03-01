@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline_utils import FEM_SENTINEL, FEM_VALID_THRESHOLD
-from optimisation_engine import DesignOptimizer
+from optimization_engine import DesignOptimizer
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

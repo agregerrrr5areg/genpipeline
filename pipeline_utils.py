@@ -21,9 +21,15 @@ FEM_SENTINEL: float = 1e6
 FEM_VALID_THRESHOLD: float = 1e5
 
 
-def is_valid_fem_result(result: dict) -> bool:
+def is_valid_fem_result(result) -> bool:
     """Return True if result contains a plausible (non-sentinel) FEM answer."""
-    stress = result.get("stress", result.get("stress_max", FEM_SENTINEL))
+    from schema import FEMResult
+    if isinstance(result, FEMResult):
+        stress = result.stress_max
+    elif isinstance(result, dict):
+        stress = result.get("stress", result.get("stress_max", FEM_SENTINEL))
+    else:
+        stress = FEM_SENTINEL
     return 0.0 < float(stress) < FEM_VALID_THRESHOLD
 
 

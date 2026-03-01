@@ -9,6 +9,7 @@ import concurrent.futures
 import freecad_bridge
 from blackwell_compat import botorch_device
 from pipeline_utils import NumpyEncoder as _NumpyEncoder, smooth_voxels, FEM_SENTINEL, FEM_VALID_THRESHOLD, is_valid_fem_result
+from schema import DesignParameters, FEMResult, OptimizationSample
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,33 +41,28 @@ class BridgeEvaluator:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.variant_win = freecad_bridge.deploy_variant_script()
-        self.evaluation_history = []
+        self.evaluation_history: List[OptimizationSample] = []
         self.n_workers = n_workers
 
-    def evaluate_batch(self, parameter_list: List[Dict[str, float]]) -> List[Dict[str, float]]:
+    def evaluate_batch(self, parameter_list: List[DesignParameters]) -> List[FEMResult]:
         """Evaluates multiple designs in parallel via the FreeCAD bridge."""
         if not self.freecad_cmd:
-            return [{"stress": 1e6, "compliance": 1e6, "mass": 1.0}] * len(parameter_list)
+            return [FEMResult(stress_max=1e6, compliance=1e6, mass=1.0, success=False)] * len(parameter_list)
 
         results_out = [None] * len(parameter_list)
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.n_workers) as executor:
             future_to_idx = {}
             for idx, params in enumerate(parameter_list):
-                h_mm = float(params.get("h_mm", 10.0))
-                rr_mm = float(params.get("r_mm", 0.0))
-                geom = params.get("geometry", "cantilever")
-                
                 # Dimension guard: cantilever needs 5mm wall thickness after hole
-                if geom == "cantilever" and h_mm - (2 * rr_mm) < 4.9:
-                    results_out[idx] = {"stress": 1e6, "compliance": 1e6, "mass": 1.0, "parameters": params}
+                if params.geometry_type == "cantilever" and params.h_mm - (2 * params.r_mm) < 4.9:
+                    results_out[idx] = FEMResult(stress_max=1e6, compliance=1e6, mass=1.0, success=False)
                     continue
-                # lbracket/ribbed/tapered: r_mm is thickness/ratio, always valid if in GEOM_SPACES bounds
 
                 future = executor.submit(
                     freecad_bridge.run_variant,
-                    self.freecad_cmd, h_mm, rr_mm, str(self.output_dir), 
-                    self.variant_win, geometry=geom, material_cfg=params.get("material_cfg")
+                    self.freecad_cmd, params.h_mm, params.r_mm, str(self.output_dir), 
+                    self.variant_win, geometry=params.geometry_type, material_cfg=params.material_cfg
                 )
                 future_to_idx[future] = idx
 
@@ -75,20 +71,23 @@ class BridgeEvaluator:
                 try:
                     res = future.result()
                     if res:
-                        eval_res = {
-                            "stress": float(res.get("stress_max", 1e6)),
-                            "compliance": float(res.get("compliance", 1e6)),
-                            "mass": float(res.get("mass", 1.0)),
-                            "bbox": res.get("bbox"),
-                            "parameters": parameter_list[idx]
-                        }
+                        eval_res = FEMResult(
+                            stress_max=float(res.get("stress_max", 1e6)),
+                            stress_mean=float(res.get("stress_mean", 0.0)),
+                            compliance=float(res.get("compliance", 1e6)),
+                            mass=float(res.get("mass", 1.0)),
+                            bbox=res.get("bbox")
+                        )
                         results_out[idx] = eval_res
-                        self.evaluation_history.append(eval_res)
+                        self.evaluation_history.append(OptimizationSample(
+                            parameters=parameter_list[idx],
+                            result=eval_res
+                        ))
                     else:
-                        results_out[idx] = {"stress": 1e6, "compliance": 1e6, "mass": 1.0, "parameters": parameter_list[idx]}
+                        results_out[idx] = FEMResult(stress_max=1e6, compliance=1e6, mass=1.0, success=False)
                 except Exception as e:
                     logger.error(f"Batch evaluation failed for index {idx}: {e}")
-                    results_out[idx] = {"stress": 1e6, "compliance": 1e6, "mass": 1.0, "parameters": parameter_list[idx]}
+                    results_out[idx] = FEMResult(stress_max=1e6, compliance=1e6, mass=1.0, success=False)
 
         return results_out
 
@@ -131,20 +130,17 @@ class DesignOptimizer:
         self.y_history = []
         self.best_bbox = None
 
-    def geometry_to_parameters(self, z: np.ndarray) -> Dict[str, float]:
+    def geometry_to_parameters(self, z: np.ndarray) -> DesignParameters:
         with torch.no_grad():
-            z_tensor = torch.from_numpy(z).float().to(self.device)
-            if z_tensor.dim() == 1:
-                z_tensor = z_tensor.unsqueeze(0)
-            # Use specific head for latent vector input
+            z_tensor = torch.from_numpy(z).float().to(self.device).view(1, -1)
             params = self.vae.predict_parameters(z_tensor)
             params = params.cpu().numpy()[0]
         
-        return {
-            "h_mm": float(params[0]),
-            "r_mm": float(params[1]),
-            "geometry": self.sim_cfg.get("geometry_type", "cantilever")
-        }
+        return DesignParameters(
+            h_mm=float(params[0]),
+            r_mm=float(params[1]),
+            geometry_type=self.sim_cfg.get("geometry_type", "cantilever")
+        )
 
     def optimize_step_parallel(self, q=4):
         """MOBO Step: Explore the Pareto Front of Stress vs Mass for Plastic."""
@@ -360,37 +356,32 @@ class DesignOptimizer:
 
         for i, p in enumerate(param_list):
             # Clamp h_mm and r_mm to per-geometry valid ranges
-            p["h_mm"] = float(np.clip(p["h_mm"], bounds["h_min"], bounds["h_max"]))
-            p["r_mm"] = float(np.clip(p["r_mm"], bounds["r_min"], bounds["r_max"]))
+            p.h_mm = float(np.clip(p.h_mm, bounds["h_min"], bounds["h_max"]))
+            p.r_mm = float(np.clip(p.r_mm, bounds["r_min"], bounds["r_max"]))
 
             # Cantilever: enforce wall-thickness constraint (h - 2r >= 5mm) pre-FEM
-            # to avoid wasting FEM calls that BridgeEvaluator will reject anyway.
             if geom == "cantilever":
-                r_max_safe = max(0.0, (p["h_mm"] - 5.0) / 2.0 - 0.05)
-                p["r_mm"] = min(p["r_mm"], r_max_safe)
-
-            # Thread z through for VoxelFEMEvaluator.evaluate_batch
-            p["z"] = z_batch[i]
+                r_max_safe = max(0.0, (p.h_mm - 5.0) / 2.0 - 0.05)
+                p.r_mm = min(p.r_mm, r_max_safe)
 
             # Use Plastic exclusively
-            mat_name = "Plastic_ABS"
-            p["material_name"] = mat_name
-            p["material_cfg"] = self.materials_db[mat_name]
+            p.material_name = "Plastic_ABS"
+            p.material_cfg = self.materials_db[p.material_name]
 
         results = self.fem_evaluator.evaluate_batch(param_list)
         
         stress_limit = self.sim_cfg.get("max_stress_mpa", 1e9)
         for i, res in enumerate(results):
             self.x_history.append(z_batch[i])
-            self.y_history.append([res["stress"], res["mass"]])
+            self.y_history.append([res.stress_max, res.mass])
 
-            # Skip sentinel values — don't log or track failures as "best"
-            if not (0.0 < res["stress"] < 1e5):
+            # Skip sentinel values
+            if not (0.0 < res.stress_max < 1e5):
                 continue
 
-            penalty = 5e5 if res["stress"] > stress_limit else 0.0
-            obj = (self.sim_cfg["w_stress"] * res["stress"] +
-                   self.sim_cfg["w_mass"] * res["mass"] +
+            penalty = 5e5 if res.stress_max > stress_limit else 0.0
+            obj = (self.sim_cfg["w_stress"] * res.stress_max +
+                   self.sim_cfg["w_mass"] * res.mass +
                    penalty)
 
             valid_scores = [
@@ -399,8 +390,8 @@ class DesignOptimizer:
                 for y in self.y_history if 0.0 < y[0] < 1e5
             ]
             if obj <= min(valid_scores):
-                self.best_bbox = res.get("bbox")
-                logger.info(f"  New Best: Stress={res['stress']:.1f}MPa (limit={stress_limit}), Mass={res['mass']:.4f}kg")
+                self.best_bbox = res.bbox
+                logger.info(f"  New Best: Stress={res.stress_max:.1f}MPa (limit={stress_limit}), Mass={res.mass:.4f}kg")
 
         return z_batch, results
 
@@ -474,7 +465,7 @@ class DesignOptimizer:
             {
                 "stress": self.y_history[idx][0],
                 "mass": self.y_history[idx][1],
-                "params": self.fem_evaluator.evaluation_history[idx].get("parameters", {}) if idx < len(self.fem_evaluator.evaluation_history) else {},
+                "params": self.fem_evaluator.evaluation_history[idx].parameters.model_dump() if idx < len(self.fem_evaluator.evaluation_history) else {},
                 "latent_z": self.x_history[idx].tolist()
             }
             for idx in pareto_indices

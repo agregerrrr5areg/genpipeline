@@ -122,3 +122,4 @@ vtk==9.6.0
 wadler_lindig==0.1.7
 watchdog==6.0.0
 Werkzeug==3.1.6
+pydantic

@@ -6,23 +6,15 @@ from dataclasses import dataclass
 import trimesh
 import torch
 from torch.utils.data import Dataset, DataLoader
+from schema import DesignParameters, FEMResult, DesignSample as PydanticDesignSample
 import logging
 import pandas as pd
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class DesignSample:
-    geometry_path: str
-    stress_max: float
-    stress_mean: float
-    compliance: float
-    mass: float
-    parameters: dict
-    voxel_grid: np.ndarray  # Stored as float32 in sample, converted to uint8 in Dataset
-    bbox: dict = None       # xmin, ymin, zmin, xmax, ymax, zmax
+# DesignSample is now imported from schema.py
+DesignSample = PydanticDesignSample
 
 
 class VoxelGrid:
@@ -121,29 +113,30 @@ class FEMResultParser:
         logger.info(f"Extracted results saved to {output_path}")
         return results
 
-    def _parse_analysis(self, analysis_obj):
+    def _parse_analysis(self, analysis_obj) -> FEMResult:
         """Extract key metrics from FEM analysis"""
-        metrics = {
-            "stress_max": 0.0,
-            "stress_mean": 0.0,
-            "compliance": 0.0,
-            "mass": 0.0,
-            "parameters": {}
-        }
+        stress_max = 0.0
+        stress_mean = 0.0
+        compliance = 0.0
 
         for result in analysis_obj.Object:
             if hasattr(result, 'StressValues'):
                 stress_vals = result.StressValues
                 if stress_vals:
-                    metrics["stress_max"] = float(max(stress_vals))
-                    metrics["stress_mean"] = float(np.mean(stress_vals))
+                    stress_max = float(max(stress_vals))
+                    stress_mean = float(np.mean(stress_vals))
 
             if hasattr(result, 'DisplacementLengths'):
                 displacements = result.DisplacementLengths
                 if displacements:
-                    metrics["compliance"] = float(np.sum(displacements))
+                    compliance = float(np.sum(displacements))
 
-        return metrics
+        return FEMResult(
+            stress_max=stress_max,
+            stress_mean=stress_mean,
+            compliance=compliance,
+            mass=0.0  # Mass usually extracted separately or updated later
+        )
 
         return mesh_paths
 
@@ -159,8 +152,8 @@ class FEMDataset(Dataset):
             if s.voxel_grid is not None and s.voxel_grid.dtype != np.uint8:
                 s.voxel_grid = (s.voxel_grid * 255).astype(np.uint8)
 
-        self.stress_max_vals = np.array([s.stress_max for s in samples])
-        self.compliance_vals = np.array([s.compliance for s in samples])
+        self.stress_max_vals = np.array([s.metrics.stress_max for s in samples])
+        self.compliance_vals = np.array([s.metrics.compliance for s in samples])
 
         self.stress_max_mean = self.stress_max_vals.mean()
         self.stress_max_std = self.stress_max_vals.std() + 1e-6
@@ -186,34 +179,34 @@ class FEMDataset(Dataset):
         # Re-scale to FP32 for training
         voxel_tensor = torch.from_numpy(voxel_uint8).float() / 255.0
 
-        stress_normalized = (sample.stress_max - self.stress_max_mean) / self.stress_max_std
-        compliance_normalized = (sample.compliance - self.compliance_mean) / self.compliance_std
+        stress_normalized = (sample.metrics.stress_max - self.stress_max_mean) / self.stress_max_std
+        compliance_normalized = (sample.metrics.compliance - self.compliance_mean) / self.compliance_std
 
         performance = torch.tensor([
             float(stress_normalized),
             float(compliance_normalized),
-            float(sample.mass)
+            float(sample.metrics.mass)
         ], dtype=torch.float32)
 
         params = torch.tensor([
-            float(sample.parameters.get("h_mm", 10.0)),
-            float(sample.parameters.get("r_mm", 3.0))
+            float(sample.parameters.h_mm),
+            float(sample.parameters.r_mm)
         ], dtype=torch.float32)
 
         # Scale Preservation: Extract bounding box
-        if sample.bbox:
+        if sample.metrics.bbox:
             bbox_tensor = torch.tensor([
-                sample.bbox['xmin'], sample.bbox['ymin'], sample.bbox['zmin'],
-                sample.bbox['xmax'], sample.bbox['ymax'], sample.bbox['zmax']
+                sample.metrics.bbox['xmin'], sample.metrics.bbox['ymin'], sample.metrics.bbox['zmin'],
+                sample.metrics.bbox['xmax'], sample.metrics.bbox['ymax'], sample.metrics.bbox['zmax']
             ], dtype=torch.float32)
         else:
             bbox_tensor = torch.zeros(6, dtype=torch.float32)
 
         return {
             'geometry': voxel_tensor.unsqueeze(0),
-            'stress_max': torch.tensor(sample.stress_max, dtype=torch.float32),
-            'compliance': torch.tensor(sample.compliance, dtype=torch.float32),
-            'mass': torch.tensor(sample.mass, dtype=torch.float32),
+            'stress_max': torch.tensor(sample.metrics.stress_max, dtype=torch.float32),
+            'compliance': torch.tensor(sample.metrics.compliance, dtype=torch.float32),
+            'mass': torch.tensor(sample.metrics.mass, dtype=torch.float32),
             'performance': performance, 'parameters': params, 'bbox': bbox_tensor
         }
 
@@ -250,13 +243,19 @@ class DataPipeline:
                 voxel = self.voxelizer.mesh_to_voxel(mesh_path)
                 sample = DesignSample(
                     geometry_path=mesh_path,
-                    stress_max=row.get("stress_max", 0.0),
-                    stress_mean=row.get("stress_mean", 0.0),
-                    compliance=row.get("compliance", 0.0),
-                    mass=row.get("mass", 0.0),
-                    parameters=params,
-                    voxel_grid=voxel,
-                    bbox=None # Bbox could be added to parquet later if needed
+                    metrics=FEMResult(
+                        stress_max=row.get("stress_max", 0.0),
+                        stress_mean=row.get("stress_mean", 0.0),
+                        compliance=row.get("compliance", 0.0),
+                        mass=row.get("mass", 0.0),
+                        bbox=None
+                    ),
+                    parameters=DesignParameters(
+                        h_mm=params.get("h_mm", 10.0),
+                        r_mm=params.get("r_mm", 3.0),
+                        geometry_type="cantilever"
+                    ),
+                    voxel_grid=voxel
                 )
                 samples.append(sample)
         else:
@@ -276,13 +275,19 @@ class DataPipeline:
 
                         sample = DesignSample(
                             geometry_path=mesh_path,
-                            stress_max=metrics.get("stress_max", 0.0),
-                            stress_mean=metrics.get("stress_mean", 0.0),
-                            compliance=metrics.get("compliance", 0.0),
-                            mass=metrics.get("mass", 0.0),
-                            parameters=metrics.get("parameters", {}),
-                            voxel_grid=voxel,
-                            bbox=metrics.get("bbox")
+                            metrics=FEMResult(
+                                stress_max=metrics.get("stress_max", 0.0),
+                                stress_mean=metrics.get("stress_mean", 0.0),
+                                compliance=metrics.get("compliance", 0.0),
+                                mass=metrics.get("mass", 0.0),
+                                bbox=metrics.get("bbox")
+                            ),
+                            parameters=DesignParameters(
+                                h_mm=metrics.get("parameters", {}).get("h_mm", 10.0),
+                                r_mm=metrics.get("parameters", {}).get("r_mm", 3.0),
+                                geometry_type="cantilever"
+                            ),
+                            voxel_grid=voxel
                         )
                         samples.append(sample)
 
