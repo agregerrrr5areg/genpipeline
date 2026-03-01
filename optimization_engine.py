@@ -218,6 +218,12 @@ class DesignOptimizer:
             p["h_mm"] = float(np.clip(p["h_mm"], bounds["h_min"], bounds["h_max"]))
             p["r_mm"] = float(np.clip(p["r_mm"], bounds["r_min"], bounds["r_max"]))
 
+            # Cantilever: enforce wall-thickness constraint (h - 2r >= 5mm) pre-FEM
+            # to avoid wasting FEM calls that BridgeEvaluator will reject anyway.
+            if geom == "cantilever":
+                r_max_safe = max(0.0, (p["h_mm"] - 5.0) / 2.0 - 0.05)
+                p["r_mm"] = min(p["r_mm"], r_max_safe)
+
             # Thread z through for VoxelFEMEvaluator.evaluate_batch
             p["z"] = z_batch[i]
 
@@ -253,7 +259,34 @@ class DesignOptimizer:
 
         return z_batch, results
 
-    def run_optimization(self, n_iterations=250, q=4):
+    def save_checkpoint(self, output_dir: str):
+        """Save x_history/y_history so a run can be resumed after a crash."""
+        ckpt = {
+            "x_history": [x.tolist() for x in self.x_history],
+            "y_history": self.y_history,
+            "best_bbox": self.best_bbox,
+        }
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        with open(Path(output_dir) / "bo_checkpoint.json", "w") as f:
+            json.dump(ckpt, f)
+
+    def load_checkpoint(self, output_dir: str) -> int:
+        """Load previous run state. Returns number of evaluations restored."""
+        ckpt_path = Path(output_dir) / "bo_checkpoint.json"
+        if not ckpt_path.exists():
+            return 0
+        with open(ckpt_path) as f:
+            ckpt = json.load(f)
+        self.x_history = [np.array(x) for x in ckpt.get("x_history", [])]
+        self.y_history = ckpt.get("y_history", [])
+        self.best_bbox = ckpt.get("best_bbox")
+        n = len(self.x_history)
+        if n:
+            logger.info(f"Resumed from checkpoint: {n} evaluations restored.")
+        return n
+
+    def run_optimization(self, n_iterations=250, q=4, output_dir: str = None,
+                         checkpoint_every: int = 10):
         logger.info(f"Starting Multi-Objective Parallel Discovery (q={q})...")
         for i in range(n_iterations):
             self.optimize_step_parallel(q=q)
@@ -263,6 +296,8 @@ class DesignOptimizer:
             else:
                 n_pareto = 0
             logger.info(f"Round {i+1}/{n_iterations} complete. Valid={len(valid)}  Pareto={n_pareto}")
+            if output_dir and (i + 1) % checkpoint_every == 0:
+                self.save_checkpoint(output_dir)
 
         # Find best non-failed design
         valid_indices = [i for i, y in enumerate(self.y_history) if 0.0 < y[0] < 1e5]
@@ -324,6 +359,8 @@ if __name__ == "__main__":
                         help="Path to gendesign_config.json exported by the FreeCAD workbench")
     parser.add_argument("--voxel-fem", action="store_true",
                         help="Use direct CalculiX voxel FEM (bypasses FreeCAD)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from bo_checkpoint.json in --output-dir")
     args = parser.parse_args()
 
     # Load workbench config if provided (overrides CLI defaults)
@@ -372,5 +409,41 @@ if __name__ == "__main__":
         evaluator = BridgeEvaluator(n_workers=args.q, output_dir=args.output_dir)
     optimizer = DesignOptimizer(vae, evaluator, latent_dim=32, sim_cfg=sim_cfg)
 
-    optimizer.run_optimization(n_iterations=n_iter, q=args.q)
+    if args.resume:
+        optimizer.load_checkpoint(args.output_dir)
+
+    optimizer.run_optimization(n_iterations=n_iter, q=args.q,
+                               output_dir=args.output_dir)
     optimizer.save_results(args.output_dir)
+
+    # Auto-export Pareto STLs
+    try:
+        from utils import VoxelConverter, ManufacturabilityConstraints
+        import trimesh as _trimesh
+        from pathlib import Path as _Path
+        hist_path = _Path(args.output_dir) / "optimization_history.json"
+        with open(hist_path) as f:
+            hist = json.load(f)
+        pareto = hist.get("pareto_front", [])
+        if pareto:
+            export_dir = _Path(args.output_dir) / "exported_designs"
+            export_dir.mkdir(exist_ok=True)
+            mfg = ManufacturabilityConstraints(config={})
+            designs = {
+                "strongest": min(pareto, key=lambda x: x["stress"]),
+                "lightest":  min(pareto, key=lambda x: x["mass"]),
+                "balanced":  min(pareto, key=lambda x: x["stress"] + 100 * x["mass"]),
+            }
+            for name, d in designs.items():
+                z = torch.tensor(d["latent_z"]).float().unsqueeze(0).to(device)
+                with torch.no_grad():
+                    voxels = vae.decode(z).squeeze().cpu().numpy()
+                voxels = mfg.apply_constraints(voxels, voxel_size=1.0/64)
+                mesh = VoxelConverter.voxel_to_mesh(voxels, voxel_size=1.0/64,
+                                                    bbox=hist.get("best_bbox"))
+                if mesh:
+                    m = _trimesh.Trimesh(vertices=mesh["vertices"], faces=mesh["faces"])
+                    m.export(str(export_dir / f"pareto_{name}.stl"))
+                    logger.info(f"Exported pareto_{name}.stl")
+    except Exception as e:
+        logger.warning(f"Auto-export failed (non-fatal): {e}")
