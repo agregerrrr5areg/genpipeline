@@ -95,7 +95,7 @@ def run_fem(doc, shape_obj, h_mm, r_mm, output_dir, cfg=None):
     import ObjectsFem
 
     geom_type = cfg.get("geometry", "cantilever")
-    stem = f"{geom_type[:4]}_h{h_mm:.1f}_r{r_mm:.1f}".replace(".", "p")
+    stem = cfg.get("stem") or f"{geom_type[:4]}_h{h_mm:.1f}_r{r_mm:.1f}".replace(".", "p")
     analysis = ObjectsFem.makeAnalysis(doc, "FemAnalysis")
 
     # ── Material definition ───────────────────────────────────────────────

@@ -36,10 +36,12 @@ logger = logging.getLogger(__name__)
 
 # ── FreeCAD search paths (WSL /mnt/c/ view of Windows C:\) ────────────────────
 FREECAD_SEARCH_PATHS = [
-    # FreeCAD 1.0 uses freecad.exe (unified GUI+console launcher)
+    # Per-user install (FreeCAD 1.0 on this machine)
+    "/mnt/c/Users/PC-PC/AppData/Local/Programs/FreeCAD 1.0/bin/freecad.exe",
+    # System-wide installs
     "/mnt/c/Program Files/FreeCAD 1.0/bin/freecad.exe",
     "/mnt/c/Program Files (x86)/FreeCAD 1.0/bin/freecad.exe",
-    # FreeCAD 0.x used FreeCADCmd.exe (headless only)
+    # FreeCAD 0.x headless
     "/mnt/c/Program Files/FreeCAD 0.21/bin/FreeCADCmd.exe",
     "/mnt/c/Program Files/FreeCAD 0.20/bin/FreeCADCmd.exe",
     "/mnt/c/Program Files (x86)/FreeCAD 0.21/bin/FreeCADCmd.exe",
@@ -258,6 +260,11 @@ def run_variant(freecad_cmd: str, h_mm: float, r_mm: float,
         "lbracket":   {"fixed_face_normal": [0,0,-1], "load_face_normal": [1,0,0], "force_direction": [0,0,-1]},
     }
 
+    # Use a unique ID to prevent collisions during parallel runs
+    import uuid
+    uid  = str(uuid.uuid4())[:8]
+    stem = f"{geometry[:4]}_h{h_mm:.1f}_r{r_mm:.1f}_{uid}".replace(".", "p")
+
     # Prepare config payload
     from sim_config import SIM_PHYSICS
     cfg_data = {
@@ -265,16 +272,12 @@ def run_variant(freecad_cmd: str, h_mm: float, r_mm: float,
         "r_mm": r_mm,
         "output": output_win,
         "geometry": geometry,
+        "stem": stem,   # script uses this for consistent output filenames
     }
     cfg_data.update(_GEOM_BC.get(geometry, _GEOM_BC["cantilever"]))
     cfg_data.update(SIM_PHYSICS)
     if material_cfg:
         cfg_data.update(material_cfg)
-
-    # Use a unique ID to prevent collisions during parallel runs
-    import uuid
-    uid = str(uuid.uuid4())[:8]
-    stem = f"{geometry[:4]}_h{h_mm:.1f}_r{r_mm:.1f}_{uid}".replace(".", "p")
     
     # FreeCAD 1.0 intercepts --flag style args; pass params via a config file.
     cfg_wsl    = WIN_TEMP_WSL / f"fem_cfg_{stem}.cfg"
