@@ -29,8 +29,9 @@ try:
     from botorch.fit import fit_gpytorch_mll
     from gpytorch.mlls import ExactMarginalLogLikelihood
     from botorch.optim import optimize_acqf
-    from botorch.acquisition.multi_objective import qExpectedHypervolumeImprovement
+    from botorch.acquisition.multi_objective import qLogExpectedHypervolumeImprovement as qExpectedHypervolumeImprovement
     from botorch.utils.multi_objective.pareto import is_non_dominated
+    from botorch.utils.multi_objective.hypervolume import NondominatedPartitioning
     BOTORCH_AVAILABLE = True
 except ImportError as e:
     BOTORCH_AVAILABLE = False
@@ -167,30 +168,41 @@ class DesignOptimizer:
         # Fit multi-output GP on CPU (Search space is latent_dim only)
         valid_x = [x for x, ok in zip(self.x_history, valid_mask) if ok]
         valid_y = [y for y, ok in zip(self.y_history, valid_mask) if ok]
-        train_X = torch.tensor(np.array(valid_x), dtype=torch.float64).to(botorch_device)
+        train_X_raw = torch.tensor(np.array(valid_x), dtype=torch.float64).to(botorch_device)
         train_Y = torch.tensor(np.array(valid_y), dtype=torch.float64).to(botorch_device)
-        
+
+        # Normalise X to [0,1] — botorch GP expects unit-cube inputs
+        X_min = train_X_raw.min(dim=0).values
+        X_max = train_X_raw.max(dim=0).values
+        X_range = (X_max - X_min).clamp(min=1e-6)
+        train_X = (train_X_raw - X_min) / X_range
+
         train_Y_std = (train_Y - train_Y.mean(dim=0)) / (train_Y.std(dim=0) + 1e-6)
         train_Y_std = -train_Y_std
 
         self.gp_model = SingleTaskGP(train_X, train_Y_std)
+        self._X_min, self._X_range = X_min, X_range  # store for candidate rescaling
         mll = ExactMarginalLogLikelihood(self.gp_model.likelihood, self.gp_model)
         fit_gpytorch_mll(mll)
 
         ref_point = train_Y_std.min(dim=0).values - 0.1
+        partitioning = NondominatedPartitioning(ref_point=ref_point, Y=train_Y_std)
         acq = qExpectedHypervolumeImprovement(
             model=self.gp_model,
             ref_point=ref_point,
+            partitioning=partitioning,
         )
-        
-        # Bounds: Latent (-3 to 3) only
-        bounds = torch.tensor([[-3.0] * self.latent_dim, 
-                                [3.0] * self.latent_dim], 
-                               dtype=torch.float64).to(botorch_device)
+
+        # Bounds in normalised [0,1] space
+        bounds = torch.zeros(2, self.latent_dim, dtype=torch.float64).to(botorch_device)
+        bounds[1] = 1.0
 
         candidates, _ = optimize_acqf(
             acq, bounds=bounds, q=q, num_restarts=10, raw_samples=512,
         )
+
+        # Rescale candidates back to original latent space
+        candidates = candidates * self._X_range + self._X_min
 
         return self._evaluate_latent_batch(candidates.cpu().numpy())
 
