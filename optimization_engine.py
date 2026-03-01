@@ -30,7 +30,7 @@ except ImportError as e:
 
 class BridgeEvaluator:
     """Evaluates designs using the FreeCAD bridge (WSL2 -> Windows)."""
-    def __init__(self, freecad_path: str = None, output_dir: str = "./optimization_results/fem", n_workers: int = 4):
+    def __init__(self, freecad_path: str = None, output_dir: str = "./optimisation_results/fem", n_workers: int = 4):
         try:
             self.freecad_cmd = freecad_bridge.find_freecad_cmd(freecad_path)
         except Exception as e:
@@ -328,7 +328,7 @@ class DesignOptimizer:
                     "preserved_mask": preserved_mask
                 }
                 # Temporary directory for refinement artifacts
-                refine_dir = Path("./optimization_results/refine_tmp")
+                refine_dir = Path("./optimisation_results/refine_tmp")
                 refine_dir.mkdir(parents=True, exist_ok=True)
                 
                 solver.run(sim_cfg_local, str(refine_dir), volfrac=0.4)
@@ -430,7 +430,7 @@ class DesignOptimizer:
             logger.info(f"Resumed from checkpoint: {n} evaluations restored.")
         return n
 
-    def run_optimization(self, n_iterations=250, q=4, output_dir: str = None,
+    def run_optimisation(self, n_iterations=250, q=4, output_dir: str = None,
                          checkpoint_every: int = 10):
         logger.info(f"Starting Multi-Objective Parallel Discovery (q={q})...")
         for i in range(n_iterations):
@@ -455,7 +455,7 @@ class DesignOptimizer:
                                         + self.sim_cfg["w_mass"]  * self.y_history[i][1]))
         return self.x_history[best_z_idx], self.y_history[best_z_idx]
 
-    def save_results(self, output_dir: str = "./optimization_results"):
+    def save_results(self, output_dir: str = "./optimisation_results"):
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
@@ -464,7 +464,7 @@ class DesignOptimizer:
         if not valid_idx:
             logger.warning("No valid evaluations to save.")
             json.dump({"pareto_front": [], "history_y": [], "best_bbox": None},
-                      open(out_path / "optimization_history.json", "w"))
+                      open(out_path / "optimisation_history.json", "w"))
             return
 
         y_valid = torch.tensor([self.y_history[i] for i in valid_idx], dtype=torch.float64)
@@ -485,7 +485,7 @@ class DesignOptimizer:
             "history_y": [list(y) for y in self.y_history],
             "best_bbox": self.best_bbox
         }
-        with open(out_path / "optimization_history.json", 'w') as f:
+        with open(out_path / "optimisation_history.json", 'w') as f:
             json.dump(results, f, indent=2, cls=_NumpyEncoder)
         self.fem_evaluator.save_history(out_path / "fem_evaluations.json")
         logger.info(f"MOBO Results Saved. {len(pareto_front)} Pareto-optimal designs identified.")
@@ -499,7 +499,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-checkpoint", type=str, required=True)
     parser.add_argument("--n-iter",      type=int,  default=250)
     parser.add_argument("--q",           type=int,  default=4)
-    parser.add_argument("--output-dir",  type=str,  default="./optimization_results")
+    parser.add_argument("--output-dir",  type=str,  default="./optimisation_results")
     parser.add_argument("--config-path", type=str,  default=None,
                         help="Path to gendesign_config.json exported by the FreeCAD workbench")
     parser.add_argument("--voxel-fem", action="store_true",
@@ -560,7 +560,7 @@ if __name__ == "__main__":
     if args.resume:
         optimizer.load_checkpoint(args.output_dir)
 
-    optimizer.run_optimization(n_iterations=n_iter, q=args.q,
+    optimizer.run_optimisation(n_iterations=n_iter, q=args.q,
                                output_dir=args.output_dir)
     optimizer.save_results(args.output_dir)
 
@@ -569,7 +569,7 @@ if __name__ == "__main__":
         from pipeline_utils import VoxelConverter, ManufacturabilityConstraints
         import trimesh as _trimesh
         from pathlib import Path as _Path
-        hist_path = _Path(args.output_dir) / "optimization_history.json"
+        hist_path = _Path(args.output_dir) / "optimisation_history.json"
         with open(hist_path) as f:
             hist = json.load(f)
         pareto = hist.get("pareto_front", [])

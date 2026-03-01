@@ -42,7 +42,7 @@ if WB_PATH and WB_PATH not in sys.path:
 
 class GenDesignWorkbench(FreeCADGui.Workbench):
     MenuText = "&GenDesign"
-    ToolTip = "Generative design: constraints, loads, VAE optimization"
+    ToolTip = "Generative design: constraints, loads, VAE optimisation"
     
     def Initialize(self):
         try:
@@ -78,7 +78,7 @@ def inject_global_menu():
             ("Set Seed Part", "GenDesign_SetSeedPart"),
             (None, None),
             ("Export Configuration", "GenDesign_ExportConfig"),
-            ("Run Optimization Pipeline", "GenDesign_RunOptimisation"),
+            ("Run Optimisation Pipeline", "GenDesign_RunOptimisation"),
             ("Import Results", "GenDesign_ImportResult"),
         ]
         for label, cmd_name in menu_items:

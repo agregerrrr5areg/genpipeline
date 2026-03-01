@@ -1,8 +1,8 @@
 """
-plot_pareto.py — plot the stress vs mass Pareto front from optimization results.
+plot_pareto.py — plot the stress vs mass Pareto front from optimisation results.
 
 Usage:
-    python plot_pareto.py --results optimization_results/production_run
+    python plot_pareto.py --results optimisation_results/production_run
 """
 import argparse
 import json
@@ -14,9 +14,9 @@ import numpy as np
 
 def plot_pareto(results_dir: str, output: str = None):
     results_dir = Path(results_dir)
-    hist_path = results_dir / "optimization_history.json"
+    hist_path = results_dir / "optimisation_history.json"
     if not hist_path.exists():
-        print(f"No optimization_history.json in {results_dir}")
+        print(f"No optimisation_history.json in {results_dir}")
         return
 
     with open(hist_path) as f:
@@ -69,7 +69,7 @@ def plot_pareto(results_dir: str, output: str = None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--results", default="optimization_results/production_run")
+    parser.add_argument("--results", default="optimisation_results/production_run")
     parser.add_argument("--output",  default=None, help="Output PNG path")
     args = parser.parse_args()
     plot_pareto(args.results, args.output)

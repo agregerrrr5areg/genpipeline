@@ -17,7 +17,7 @@ GenDesign is a FreeCAD workbench that connects FreeCAD's geometry authoring envi
 FreeCAD (Windows)                         WSL2 (Linux)
 ─────────────────────────────             ─────────────────────────────
 GenDesign Workbench                       /home/genpipeline/
-  ├── constraint_obj.py   ─┐              ├── optimization_engine.py
+  ├── constraint_obj.py   ─┐              ├── optimisation_engine.py
   ├── load_obj.py          │ document     ├── vae_design_model.py
   ├── seed_part.py         │ objects      ├── freecad_bridge.py
   ├── export_pipeline.py ──┘              └── voxel_fem.py
@@ -27,7 +27,7 @@ GenDesign Workbench                       /home/genpipeline/
         │  C:\Windows\Temp\gendesign_config.json
         │  /mnt/c/Windows/Temp/gendesign_config.json
         ▼
-  wsl bash -c "python optimization_engine.py --config-path ..."
+  wsl bash -c "python optimisation_engine.py --config-path ..."
         │
         ▼
   stdout streamed to progress dialog
@@ -123,7 +123,7 @@ Boundary condition normals (`fixed_face_normal`, `load_face_normal`) are derived
 
 1. Export `gendesign_config.json` to `C:\Windows\Temp\`
 2. Build WSL2 command:
-   `cd {pipeline_path} && source venv/bin/activate && python optimization_engine.py --model-checkpoint {ckpt} --n-iterations {n} --config-path {wsl_config}`
+   `cd {pipeline_path} && source venv/bin/activate && python optimisation_engine.py --model-checkpoint {ckpt} --n-iterations {n} --config-path {wsl_config}`
 3. Launch `wsl bash -c "..."` via `subprocess.Popen`
 4. Stream stdout line-by-line to a `QPlainTextEdit` progress dialog
 5. Cancel button sends `proc.terminate()`
@@ -147,7 +147,7 @@ Default install path: `C:\Users\PC-PC\AppData\Local\Programs\FreeCAD 1.0\Mod\Gen
 
 ## Integration with Pipeline
 
-`optimization_engine.py` accepts `--config-path <json>`. When provided:
+`optimisation_engine.py` accepts `--config-path <json>`. When provided:
 - `geometry_type` overrides `sim_cfg["geometry_type"]`
 - `n_iter` overrides `--n-iter`
 - `checkpoint_path` overrides `--model-checkpoint`

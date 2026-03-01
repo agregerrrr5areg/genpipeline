@@ -6,7 +6,7 @@
 
 **Architecture:** Four layers of validation — unit tests (pure functions, no FreeCAD/GPU), integration tests (VAE forward pass on GPU), end-to-end smoke test (BO with 20 evaluations), and visual inspection (STL exports + latent PCA). Broken stale tests are removed first. All new tests live in `tests/` and run with `pytest`.
 
-**Tech Stack:** pytest, numpy, torch, trimesh (mesh export), voxel_fem.VoxelHexMesher, freecad_bridge utilities, vae_design_model.DesignVAE, optimization_engine.DesignOptimizer
+**Tech Stack:** pytest, numpy, torch, trimesh (mesh export), voxel_fem.VoxelHexMesher, freecad_bridge utilities, vae_design_model.DesignVAE, optimisation_engine.DesignOptimizer
 
 ---
 
@@ -680,11 +680,11 @@ Verify the full optimisation loop runs without error and produces a non-trivial 
 
 ```bash
 source venv/bin/activate
-python optimization_engine.py \
+python optimisation_engine.py \
   --model-checkpoint checkpoints/vae_best.pth \
   --n-iter 5 \
   --q 4 \
-  --output-dir ./optimization_results/smoke_test \
+  --output-dir ./optimisation_results/smoke_test \
   2>&1 | tee /tmp/bo_smoke.log
 ```
 
@@ -701,7 +701,7 @@ MOBO Results Saved. N Pareto-optimal designs identified.
 ```bash
 python3 -c "
 import json
-with open('optimization_results/smoke_test/optimization_history.json') as f:
+with open('optimisation_results/smoke_test/optimisation_history.json') as f:
     h = json.load(f)
 pf = h['pareto_front']
 print(f'Pareto designs: {len(pf)}')
@@ -715,7 +715,7 @@ Expected: at least 2 Pareto designs, stress values 50–500 MPa range, mass 0.05
 **Step 3: Commit results summary**
 
 ```bash
-git add optimization_results/smoke_test/optimization_history.json
+git add optimisation_results/smoke_test/optimisation_history.json
 git commit -m "eval: BO smoke test (5 rounds, N Pareto designs)"
 ```
 
@@ -761,12 +761,12 @@ Expected: `{'stress': float > 0, 'compliance': float > 0, 'mass': float > 0}`. V
 **Step 3: BO smoke test with --voxel-fem**
 
 ```bash
-python optimization_engine.py \
+python optimisation_engine.py \
   --model-checkpoint checkpoints/vae_best.pth \
   --n-iter 3 \
   --q 2 \
   --voxel-fem \
-  --output-dir ./optimization_results/voxel_fem_test \
+  --output-dir ./optimisation_results/voxel_fem_test \
   2>&1 | tee /tmp/voxel_fem_bo.log
 ```
 
@@ -818,8 +818,8 @@ if Path('eval_results/eval_report.json').exists():
     print(f'VAE IoU: {r[\"val_iou\"]:.3f}  BCE: {r[\"val_bce\"]:.3f}')
 
 # BO results
-if Path('optimization_results/smoke_test/optimization_history.json').exists():
-    h = json.load(open('optimization_results/smoke_test/optimization_history.json'))
+if Path('optimisation_results/smoke_test/optimisation_history.json').exists():
+    h = json.load(open('optimisation_results/smoke_test/optimisation_history.json'))
     print(f'Pareto designs: {len(h[\"pareto_front\"])}')
 "
 ```

@@ -386,7 +386,7 @@ class VoxelFEMEvaluator:
             if self.ccx_cmd and self.ccx_cmd.endswith(".exe"):
                 output_dir = "/mnt/c/Windows/Temp/voxel_fem"
             else:
-                output_dir = "./optimization_results/voxel_fem"
+                output_dir = "./optimisation_results/voxel_fem"
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.fixed_face = fixed_face

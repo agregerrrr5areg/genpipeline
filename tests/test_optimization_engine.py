@@ -1,4 +1,4 @@
-# tests/test_optimization_engine.py
+# tests/test_optimisation_engine.py
 """
 Tests for DesignOptimizer: GP fallback and Pareto filtering.
 """
@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline_utils import FEM_SENTINEL, FEM_VALID_THRESHOLD
-from optimization_engine import DesignOptimizer
+from optimisation_engine import DesignOptimizer
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -104,9 +104,9 @@ class TestAllFailedEvalsFallback:
         for r in results:
             assert r["stress"] == FEM_SENTINEL
 
-    def test_run_optimization_all_failed_returns_zeros(self):
+    def test_run_optimisation_all_failed_returns_zeros(self):
         """
-        run_optimization() with all-sentinel FEM results should return (zeros, sentinel)
+        run_optimisation() with all-sentinel FEM results should return (zeros, sentinel)
         without crashing.
         """
         latent_dim = 4
@@ -117,7 +117,7 @@ class TestAllFailedEvalsFallback:
             device="cpu", latent_dim=latent_dim,
         )
 
-        best_z, best_y = optimizer.run_optimization(n_iterations=2, q=2)
+        best_z, best_y = optimizer.run_optimisation(n_iterations=2, q=2)
 
         assert best_z is not None
         assert len(best_z) == latent_dim
@@ -152,7 +152,7 @@ class TestParetoFilterExcludesSentinel:
 
         optimizer.save_results(str(tmp_path))
 
-        hist_path = tmp_path / "optimization_history.json"
+        hist_path = tmp_path / "optimisation_history.json"
         assert hist_path.exists()
         hist = json.loads(hist_path.read_text())
 

@@ -49,7 +49,7 @@ class DesignVAE(nn.Module):
 
     input_shape must be divisible by 2**4 = 16.
 
-    All layers run on GPU. nn.Linear (2D matmul) is safe on Blackwell RTX 5080
+    All layers run on GPU. nn.Linear (2D matmul) is safe on Blackwell RTX 50 series card
     — the cuBLAS bug only affects strided batched GEMM (dim > 2, batch ≥ 2).
     """
 

@@ -134,7 +134,7 @@ class CmdRunOptimisation:
         wsl_cmd = (
             f"cd {pipeline_path} && "
             f"source venv/bin/activate && "
-            f"python optimization_engine.py "
+            f"python optimisation_engine.py "
             f"--model-checkpoint {ckpt_path} "
             f"--n-iterations {n_iter} "
             f"--config-path {config_wsl}"
@@ -197,7 +197,7 @@ class CmdImportResult:
         pipeline_path = seed.WSL2PipelinePath if seed else "/home/genpipeline"
 
         # Convert WSL2 path to Windows path for file dialog default
-        wsl_result = f"{pipeline_path}/optimization_results/best_design.stl"
+        wsl_result = f"{pipeline_path}/optimisation_results/best_design.stl"
         win_result = _wsl_to_win(wsl_result)
 
         path, _ = QtWidgets.QFileDialog.getOpenFileName(

@@ -154,7 +154,7 @@ class FEMDataset(Dataset):
         self.voxelizer = VoxelGrid(resolution=voxel_resolution)
         self.use_sdf = use_sdf
 
-        # Precision Optimization: Convert voxel grids to uint8 (FP8 storage simulation)
+        # Precision Optimisation: Convert voxel grids to uint8 (FP8 storage simulation)
         for s in self.samples:
             if s.voxel_grid is not None and s.voxel_grid.dtype != np.uint8:
                 s.voxel_grid = (s.voxel_grid * 255).astype(np.uint8)

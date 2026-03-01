@@ -4,7 +4,7 @@
 
 **Goal:** Delete 6 dead scripts, merge the live parts of `utils.py` into `pipeline_utils.py`, update 3 import sites, and delete `utils.py`.
 
-**Architecture:** `pipeline_utils.py` becomes the single shared utility module — it already holds `NumpyEncoder`, `smooth_voxels`, and FEM sentinel constants. We append `VoxelConverter` and `ManufacturabilityConstraints` from `utils.py`, drop the dead classes (`FreeCADInterface`, `PerformanceNormalizer`, `GeometryMetrics`, `VoxelConverter.smooth_voxel_grid`), then update `eval_vae.py`, `optimization_engine.py`, and `quickstart.py` to import from `pipeline_utils`.
+**Architecture:** `pipeline_utils.py` becomes the single shared utility module — it already holds `NumpyEncoder`, `smooth_voxels`, and FEM sentinel constants. We append `VoxelConverter` and `ManufacturabilityConstraints` from `utils.py`, drop the dead classes (`FreeCADInterface`, `PerformanceNormalizer`, `GeometryMetrics`, `VoxelConverter.smooth_voxel_grid`), then update `eval_vae.py`, `optimisation_engine.py`, and `quickstart.py` to import from `pipeline_utils`.
 
 **Tech Stack:** Python, numpy, scipy, scikit-image (marching cubes), trimesh
 
@@ -214,7 +214,7 @@ Three files import from `utils`. Change them all to import from `pipeline_utils`
 
 **Files:**
 - Modify: `eval_vae.py:87`
-- Modify: `optimization_engine.py:411`
+- Modify: `optimisation_engine.py:411`
 - Modify: `quickstart.py:194`
 
 **Step 1: eval_vae.py**
@@ -228,7 +228,7 @@ Replace with:
 from pipeline_utils import VoxelConverter
 ```
 
-**Step 2: optimization_engine.py**
+**Step 2: optimisation_engine.py**
 
 Find:
 ```python
@@ -313,5 +313,5 @@ git commit -m "refactor: merge utils.py into pipeline_utils, delete dead scripts
 |--------|-------|
 | Deleted | `synthetic_test.py`, `sim_config.py`, `visualize_pareto.py`, `live_viewer.py`, `view_stresses.py`, `refine_design.py`, `utils.py` |
 | Grown | `pipeline_utils.py` (+VoxelConverter, +ManufacturabilityConstraints) |
-| Updated imports | `eval_vae.py`, `optimization_engine.py`, `quickstart.py` |
+| Updated imports | `eval_vae.py`, `optimisation_engine.py`, `quickstart.py` |
 | Dead code dropped | `FreeCADInterface`, `PerformanceNormalizer`, `GeometryMetrics`, `VoxelConverter.smooth_voxel_grid`, `convert_windows_path_to_wsl` |

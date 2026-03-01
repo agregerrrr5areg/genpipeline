@@ -31,7 +31,7 @@ def validate_config(cfg: dict) -> list:
         'epochs': int,
         'learning_rate': float,
         'beta_vae': float,
-        'n_optimization_iterations': int,
+        'n_optimisation_iterations': int,
     }
     for key, expected_type in required_keys.items():
         if key not in cfg:
@@ -76,8 +76,8 @@ class PipelineConfig:
             'beta_vae': 1.0,
             'pos_weight': 30.0,
             'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-            'n_optimization_iterations': 1000,
-            'output_dir': './optimization_results'
+            'n_optimisation_iterations': 1000,
+            'output_dir': './optimisation_results'
         }
 
         if config_path and Path(config_path).exists():
@@ -160,9 +160,9 @@ def step_3_train_vae(config: PipelineConfig, train_loader, val_loader):
 
 
 def step_4_optimize_designs(config: PipelineConfig):
-    logger.info("=" * 60 + "\nSTEP 4: Design Optimization Loop\n" + "=" * 60)
+    logger.info("=" * 60 + "\nSTEP 4: Design Optimisation Loop\n" + "=" * 60)
     try:
-        from optimization_engine import DesignOptimizer
+        from optimisation_engine import DesignOptimizer
         from vae_design_model import DesignVAE
         from fem.voxel_fem import VoxelFEMEvaluator
     except ImportError: return None, None
@@ -171,7 +171,7 @@ def step_4_optimize_designs(config: PipelineConfig):
     vae.load_state_dict(checkpoint['model_state_dict'])
     evaluator = VoxelFEMEvaluator(resolution=config['voxel_resolution'])
     optimizer = DesignOptimizer(vae, evaluator, device=config['device'], latent_dim=config['latent_dim'])
-    return optimizer.optimize(n_iterations=config['n_optimization_iterations'])
+    return optimizer.optimize(n_iterations=config['n_optimisation_iterations'])
 
 
 def step_5_export_design(config: PipelineConfig, best_z=None):
@@ -187,7 +187,7 @@ def step_5_export_design(config: PipelineConfig, best_z=None):
     vae.load_state_dict(checkpoint['model_state_dict'])
     vae = vae.to(device)
 
-    hist_path = Path(config['output_dir']) / "optimization_history.json"
+    hist_path = Path(config['output_dir']) / "optimisation_history.json"
     if not hist_path.exists(): return False
     
     with open(hist_path, 'r') as f: hist = json.load(f)
@@ -232,7 +232,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config = PipelineConfig('pipeline_config.json')
-    if args.n_iter: config['n_optimization_iterations'] = args.n_iter
+    if args.n_iter: config['n_optimisation_iterations'] = args.n_iter
     if args.epochs: config['epochs'] = args.epochs
     if args.batch_size: config['batch_size'] = args.batch_size
     if args.results_dir: config['output_dir'] = args.results_dir
@@ -255,7 +255,7 @@ if __name__ == "__main__":
         step_3_train_vae(config, train_l, val_l)
     elif args.step == 4:
         best_z, _ = step_4_optimize_designs(config)
-        np.save('optimization_results/best_z.npy', best_z)
+        np.save('optimisation_results/best_z.npy', best_z)
     elif args.step == 5:
-        z = np.load('optimization_results/best_z.npy') if Path('optimization_results/best_z.npy').exists() else None
+        z = np.load('optimisation_results/best_z.npy') if Path('optimisation_results/best_z.npy').exists() else None
         step_5_export_design(config, z)

@@ -1,5 +1,5 @@
 """
-Blackwell (sm_120, RTX 5080) / CUDA 12.8 / torch 2.10.0 compatibility notes.
+Blackwell (sm_120, RTX 50 series card) / CUDA 12.8 / torch 2.10.0 compatibility notes.
 
 cublasDgemmStridedBatched and cublasSgemmStridedBatched are broken for
 batch_size >= 2 on this hardware/driver combination. This crashes gpytorch
@@ -12,7 +12,7 @@ is the FEM simulations, not the GP.
 The 3D VAE in vae_design_model.py is unaffected — it uses Conv3D, not batched
 GEMM — and should stay on CUDA.
 
-Usage in optimization_engine.py or any BoTorch code:
+Usage in optimisation_engine.py or any BoTorch code:
 
     from blackwell_compat import botorch_device
     # Always 'cpu' on this machine; returns 'cuda' once the bug is fixed.

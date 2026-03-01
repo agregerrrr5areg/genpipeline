@@ -1,18 +1,18 @@
 # GenPipeline
 
-Generative design pipeline combining FreeCAD FEM simulation, 3D SIMP topology optimization, a 3D VAE, and Bayesian optimization to discover mechanically optimal geometries. Optimized for RTX 5080 (Blackwell/CUDA 12.8).
+Generative design pipeline combining FreeCAD FEM simulation, 3D SIMP topology optimisation, a 3D VAE, and Bayesian optimisation to discover mechanically optimal geometries. Optimised for RTX 50 series card (Blackwell/CUDA 12.8).
 
 ---
 
 ## Key Features
 
-- **Hybrid Physics Engine** — High-fidelity FreeCAD (CalculiX) simulations or high-speed 3D SIMP topology optimization (CPU & PyTorch GPU).
+- **Hybrid Physics Engine** — High-fidelity FreeCAD (CalculiX) simulations or high-speed 3D SIMP topology optimisation (CPU & PyTorch GPU).
 - **One-Command Bootstrap** — Generate 1000s of physics-based training samples without FreeCAD via the integrated topology data generator.
 - **Topology Refinement** — Multi-objective BO loop can refine VAE-decoded candidates using 20 SIMP iterations before final FEM validation.
 - **Joint Preservation** — Define non-design domains (locked solid regions) directly in FreeCAD to ensure structural integrity for bolt holes, flanges, and multi-part assemblies.
 - **Multi-Geometry Support** — Out-of-the-box support for Cantilever, L-Bracket, Tapered Beam, and Ribbed Plate families.
-- **Blackwell Optimized** — Custom 3D VAE and CUDA kernels (voxelization up to 832× faster) tuned for RTX 5080 precision and memory constraints.
-
+- **Blackwell Optimised** — Custom 3D VAE and CUDA kernels (voxelisation up to 832× faster) tuned for RTX 50 series card precision and memory constraints.
+    
 ---
 
 ## MANDATE: No Non-Physical Data
@@ -28,7 +28,7 @@ All training data must originate from physics-based simulations (FreeCAD/Calculi
   - [voxel_fem.py](file:///home/genpipeline/fem/voxel_fem.py): Voxel-based FEM solver.
   - [data/](file:///home/genpipeline/fem/data/): Main training results.
 - [vae_design_model.py](file:///home/genpipeline/vae_design_model.py): 3D VAE with performance prediction.
-- [optimization_engine.py](file:///home/genpipeline/optimization_engine.py): Multi-objective BO.
+- [optimisation_engine.py](file:///home/genpipeline/optimisation_engine.py): Multi-objective BO.
 - [quickstart.py](file:///home/genpipeline/quickstart.py): Integrated CLI/API for the pipeline.
 
 ---
@@ -58,8 +58,8 @@ python quickstart.py --topo-data --n-samples 200
 python quickstart.py --step 3 --epochs 300 --batch-size 32
 ```
 
-### 3. Optimize Designs
-Run Bayesian optimization with topology refinement enabled:
+### 3. Optimise Designs
+Run Bayesian optimisation with topology refinement enabled:
 ```bash
 python quickstart.py --step 4 --n-iter 50 --topo-refine
 ```
@@ -93,7 +93,7 @@ python -m pytest tests/test_simp_solver.py
 
 ## Hardware Notes (Blackwell)
 
-The RTX 50 series requires `torch` from the `cu128` index for sm_120 support. Due to a cuBLAS driver bug in CUDA 12.8 (batched GEMM crash), BoTorch GP models are automatically routed to CPU via `blackwell_compat.py`. VAE training and SIMP GPU solving utilize full CUDA acceleration.
+The RTX 50 series requires `torch` from the `cu128` index for sm_120 support. Due to a cuBLAS driver bug in CUDA 12.8 (batched GEMM crash), BoTorch GP models are automatically routed to CPU via `blackwell_compat.py`. VAE training and SIMP GPU solving utilise full CUDA acceleration.
 
 ---
 

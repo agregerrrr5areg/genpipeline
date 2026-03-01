@@ -1,6 +1,6 @@
 
 """
-topo_data_gen.py — Topology optimization as a dataset generator.
+topo_data_gen.py — Topology optimisation as a dataset generator.
 Runs SIMP on various configurations to generate physics-based training data.
 
 Mandate: No non-physical synthetic data.
@@ -33,7 +33,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
 
 class TopoDataGenerator:
-    """Generates topology optimization samples using SIMP."""
+    """Generates topology optimisation samples using SIMP."""
 
     GEOM_BCS = {
         "cantilever": {"fixed_face": "x_min", "load_face": "x_max", "load_dof": 2},
@@ -47,7 +47,7 @@ class TopoDataGenerator:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def generate(self, n_samples: int = 100):
-        log.info(f"Generating {n_samples} topology optimization samples...")
+        log.info(f"Generating {n_samples} topology optimisation samples...")
         
         geoms = list(self.GEOM_BCS.keys())
 

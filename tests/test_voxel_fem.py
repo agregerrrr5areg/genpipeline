@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from voxel_fem import _wsl_to_win, VoxelHexMesher
+from fem.voxel_fem import _wsl_to_win, VoxelHexMesher
 from pipeline_utils import FEM_SENTINEL
 
 

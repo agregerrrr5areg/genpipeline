@@ -15,7 +15,7 @@ _VALID_CFG = {
     'epochs': 10,
     'learning_rate': 3e-4,
     'beta_vae': 1.0,
-    'n_optimization_iterations': 50,
+    'n_optimisation_iterations': 50,
 }
 
 

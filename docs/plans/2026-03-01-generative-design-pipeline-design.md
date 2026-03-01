@@ -26,7 +26,7 @@ Manually iterating on FEM-validated mechanical designs is slow. The goal is a cl
 │                  gendesign_config.json                              │
 │                    C:\Windows\Temp\                                 │
 └───────────────────────────┬─────────────────────────────────────────┘
-                            │  wsl bash -c "python optimization_engine.py"
+                            │  wsl bash -c "python optimisation_engine.py"
                             ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  WSL2 / Linux — /home/genpipeline/                                  │
@@ -47,7 +47,7 @@ Manually iterating on FEM-validated mechanical designs is slow. The goal is a cl
 │   Heads:   performance (→3) + parameter (→2)                        │
 │   37.7M params, BF16 conv + FP32 linear (Blackwell workaround)     │
 │                                                                     │
-│  Bayesian Optimisation (optimization_engine.py)                     │
+│  Bayesian Optimisation (optimisation_engine.py)                     │
 │   MOBO: qEHVI on [stress, mass] Pareto front                        │
 │   GP on CPU (Blackwell cuBLAS batched GEMM bug)                     │
 │   Latent space: z ∈ ℝ³² → parameter_head → (h_mm, r_mm)           │
@@ -87,7 +87,7 @@ Generates parametric FEM variants by calling Windows FreeCAD from WSL2 via subpr
 
 ### 3.2 Dataset (`fem_data_pipeline.py`, `rebuild_dataset.py`)
 
-- `VoxelGrid` voxelizes STL meshes at 64³ using a CUDA kernel (~2890× faster than CPU trimesh)
+- `VoxelGrid` voxelises STL meshes at 64³ using a CUDA kernel (~2890× faster than CPU trimesh)
 - Stored as uint8 per sample, converted to float32 on `__getitem__`
 - `rebuild_dataset.py` scans `fem_data/` and rebuilds `fem_dataset.pt` from scratch
 
@@ -99,14 +99,14 @@ Generates parametric FEM variants by calling Windows FreeCAD from WSL2 via subpr
 
 37.7M parameter 3D VAE trained at 64³ resolution.
 
-**Blackwell RTX 5080 constraints:**
+**Blackwell RTX 50 series card constraints:**
 - `cublasDgemmStridedBatched` (batched 3D matmul) crashes at batch ≥ 2 — BoTorch GP stays on CPU
 - `cublasGemmEx` with BF16 crashes during backward for `nn.Linear` — wrapped in `torch.autocast(enabled=False)`
 - Conv3D forward/backward in BF16 works correctly
 
 **Training:** 500 epochs, batch 128, OneCycleLR (3e-4 peak), KL ramp over 50 epochs, val loss 0.0084 (final checkpoint).
 
-### 3.4 Bayesian Optimisation (`optimization_engine.py`)
+### 3.4 Bayesian Optimisation (`optimisation_engine.py`)
 
 Multi-objective BO using `qExpectedHypervolumeImprovement` over [stress, mass].
 
@@ -128,7 +128,7 @@ Direct CalculiX path that bypasses FreeCAD entirely.
 - Binary voxels → C3D8 hex elements (node deduplication via dict)
 - BCs applied by face index (x_min fixed, x_max loaded by default)
 - `.frd` parser uses fixed-width column slicing (12 chars at offset 13+slot×12)
-- Integrated via `--voxel-fem` flag in `optimization_engine.py`
+- Integrated via `--voxel-fem` flag in `optimisation_engine.py`
 - Verified: 10³ solid cube → stress_max=61.1 MPa ✓
 
 ### 3.6 FreeCAD Workbench (`freecad_workbench/`)
@@ -154,7 +154,7 @@ User defines BCs in FreeCAD
 gendesign_config.json
         │
         ▼  Run Optimisation (WSL2 subprocess)
-optimization_engine.py --config-path gendesign_config.json
+optimisation_engine.py --config-path gendesign_config.json
         │
         ├── loads VAE checkpoint
         ├── seeds latent space (random z ~ N(0,1))
@@ -170,8 +170,8 @@ optimization_engine.py --config-path gendesign_config.json
               → log Pareto front size
         │
         ▼
-optimization_results/
-  ├── optimization_history.json  (Pareto front + all history)
+optimisation_results/
+  ├── optimisation_history.json  (Pareto front + all history)
   └── fem_evaluations.json
         │
         ▼  (optional) step_5_export_design
@@ -186,7 +186,7 @@ optimization_results/
 The pipeline has been built and tested in parts. A full end-to-end run has not been executed:
 - Retrain on balanced ~450-sample dataset is queued (auto-starts after generation)
 - Run `python quickstart.py --step 4 --n-iter 50` with the production checkpoint
-- Verify `optimization_history.json` contains a non-trivial Pareto front
+- Verify `optimisation_history.json` contains a non-trivial Pareto front
 
 ### 5.2 Post-training Evaluation
 `eval_vae.py` is ready but has not been run on the production checkpoint:
@@ -204,7 +204,7 @@ The workbench has been deployed but not tested end-to-end in a live FreeCAD sess
 
 ### 5.4 Voxel FEM Integration Test
 `voxel_fem.py` was unit-tested on a solid cube but not integrated into a full BO loop:
-- Run `python optimization_engine.py --voxel-fem --model-checkpoint checkpoints/vae_best.pth --n-iter 20`
+- Run `python optimisation_engine.py --voxel-fem --model-checkpoint checkpoints/vae_best.pth --n-iter 20`
 - Verify stress/mass values are plausible
 - Compare against bridge-evaluated results on the same geometry
 
@@ -222,7 +222,7 @@ The workbench has been deployed but not tested end-to-end in a live FreeCAD sess
 | `epochs` | 500 | Training epochs |
 | `learning_rate` | 3e-4 | OneCycleLR peak LR |
 | `beta_vae` | 0.05 | KL weight |
-| `n_optimization_iterations` | 1000 | BO rounds |
+| `n_optimisation_iterations` | 1000 | BO rounds |
 
 `gendesign_config.json` (workbench export):
 
