@@ -130,7 +130,7 @@ def plot_latent_pca(zs: np.ndarray, output_dir: Path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint",  default="checkpoints/vae_best.pth")
-    parser.add_argument("--fem-data",    default="./fem_data")
+    parser.add_argument("--fem-data",    default="./fem/data")
     parser.add_argument("--output-dir",  default="./eval_results")
     parser.add_argument("--batch-size",  type=int, default=16)
     parser.add_argument("--n-samples",   type=int, default=8)

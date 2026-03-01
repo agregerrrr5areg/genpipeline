@@ -18,10 +18,30 @@ def _write_pair(d: Path, stem: str, stress: float = 100.0):
         "parameters": {"h_mm": 10.0, "r_mm": 2.0},
     }))
 
+def _write_parquet(d: Path, data_list: list):
+    import pandas as pd
+    df = pd.DataFrame(data_list)
+    df.to_parquet(d / "results.parquet", index=False)
+
 
 class TestLoadPairs:
     def test_empty_dir(self, tmp_path):
         assert load_pairs(tmp_path) == []
+
+    def test_parquet_loading(self, tmp_path):
+        (tmp_path / "cant_mesh.stl").write_text("solid empty\nendsolid\n")
+        _write_parquet(tmp_path, [{
+            "geometry_path": str(tmp_path / "cant_mesh.stl"),
+            "stress_max": 150.0,
+            "compliance": 12.0,
+            "mass": 0.4,
+            "param_h_mm": 10.0,
+            "source_file": "cant_fem_results.json"
+        }])
+        pairs = load_pairs(tmp_path)
+        assert len(pairs) == 1
+        assert pairs[0][1]["stress_max"] == 150.0
+        assert pairs[0][1]["parameters"]["h_mm"] == 10.0
 
     def test_single_valid_pair(self, tmp_path):
         _write_pair(tmp_path, "cant_h10p0_r2p0")

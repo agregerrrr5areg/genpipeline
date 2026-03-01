@@ -1,48 +1,35 @@
 # GenPipeline
 
-Generative design pipeline combining FreeCAD FEM simulation, a 3D VAE, and Bayesian optimisation to discover structurally optimal geometries. Tuned for RTX 5080 (Blackwell/CUDA 12.8).
+Generative design pipeline combining FreeCAD FEM simulation, 3D SIMP topology optimization, a 3D VAE, and Bayesian optimization to discover mechanically optimal geometries. Optimized for RTX 5080 (Blackwell/CUDA 12.8).
 
 ---
 
-## Status
+## Key Features
 
-| Component | State | Notes |
-|-----------|-------|-------|
-| FEM data generation | Active | Cantilever, L-bracket, tapered, ribbed variants via FreeCAD bridge |
-| VAE training | Active | 3D conv VAE, 16-dim latent space, performance + parameter heads |
-| Bayesian optimisation | Active | Two-stage: GPU surrogate sweep then physical-space BO per geometry |
-| Voxel FEM path | Active | Direct CalculiX C3D8 hex mesh from decoded voxels (`--voxel-fem`) |
-| Blackwell workaround | Active | BoTorch GP runs on CPU; VAE/Conv on GPU |
+- **Hybrid Physics Engine** — High-fidelity FreeCAD (CalculiX) simulations or high-speed 3D SIMP topology optimization (CPU & PyTorch GPU).
+- **One-Command Bootstrap** — Generate 1000s of physics-based training samples without FreeCAD via the integrated topology data generator.
+- **Topology Refinement** — Multi-objective BO loop can refine VAE-decoded candidates using 20 SIMP iterations before final FEM validation.
+- **Joint Preservation** — Define non-design domains (locked solid regions) directly in FreeCAD to ensure structural integrity for bolt holes, flanges, and multi-part assemblies.
+- **Multi-Geometry Support** — Out-of-the-box support for Cantilever, L-Bracket, Tapered Beam, and Ribbed Plate families.
+- **Blackwell Optimized** — Custom 3D VAE and CUDA kernels (voxelization up to 832× faster) tuned for RTX 5080 precision and memory constraints.
+
+---
+
+## MANDATE: No Non-Physical Data
+All training data must originate from physics-based simulations (FreeCAD/CalculiX or SIMP). **Non-physical 'synthetic' data** (random noise, pure geometric heuristics) **is strictly forbidden.** The model must exclusively learn from physically plausible mechanics.
 
 ---
 
 ## Architecture
 
-```
-freecad_bridge.py      — parametric FEM variants via FreeCAD (WSL2 -> Windows)
-fem_data_pipeline.py   — voxelise STL + FEM metrics -> fem_dataset.pt
-vae_design_model.py    — 3D conv VAE: encode/decode + stress/param predictor heads
-optimization_engine.py — two-stage BO: latent sweep (Stage 1) + physical BO (Stage 2)
-voxel_fem.py           — direct CalculiX path: voxels -> C3D8 hex mesh -> .frd parser
-utils.py               — voxel/mesh helpers, geometry metrics
-quickstart.py          — orchestrates all pipeline steps
-blackwell_compat.py    — device routing (BoTorch on CPU, VAE on GPU)
-```
-
-### Optimisation stages
-
-- **Stage 1** — GPU surrogate sweep: sample 100 latent vectors, score via VAE predictor, run real FEM on top candidates.
-- **Stage 2a** (default) — Physical BO in (h, r) space per geometry via FreeCAD bridge.
-- **Stage 2b** (`--voxel-fem`) — Latent-space UCB/GP BO with direct CalculiX hex mesh; evaluates the full 32³ voxel topology, not just (h, r).
-
-### Geometry types and boundary conditions
-
-| Geometry | Fixed face | Load face | BO bounds |
-|----------|-----------|-----------|-----------|
-| `cantilever` | x-min | x-max | h ∈ [5,20] mm, r ∈ [0,5] mm |
-| `lbracket` | z-min (base of vertical arm) | x-max (tip of horizontal arm) | arm_h ∈ [8,25] mm, thickness ∈ [5,20] mm |
-| `tapered` | x-min | x-max | h_start ∈ [8,25] mm, taper ∈ [2,7] |
-| `ribbed` | x-min | x-max | rib_h ∈ [6,20] mm, plate_frac ∈ [2,6] |
+- [topology/simp_solver_gpu.py](file:///home/genpipeline/topology/simp_solver_gpu.py): PyTorch-based 3D SIMP.
+- [fem/](file:///home/genpipeline/fem/): Unified physics/FEM package.
+  - [data_pipeline.py](file:///home/genpipeline/fem/data_pipeline.py): Consolidates JSON/Parquet results.
+  - [voxel_fem.py](file:///home/genpipeline/fem/voxel_fem.py): Voxel-based FEM solver.
+  - [data/](file:///home/genpipeline/fem/data/): Main training results.
+- [vae_design_model.py](file:///home/genpipeline/vae_design_model.py): 3D VAE with performance prediction.
+- [optimization_engine.py](file:///home/genpipeline/optimization_engine.py): Multi-objective BO.
+- [quickstart.py](file:///home/genpipeline/quickstart.py): Integrated CLI/API for the pipeline.
 
 ---
 
@@ -54,52 +41,59 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
 ```
 
-FreeCAD 1.0 must be installed on Windows (not in WSL). The bridge auto-detects it under `/mnt/c/`.
+FreeCAD 1.0 is required for parametric variants (Windows host). SIMP-based features run natively in Linux/WSL2.
 
 ---
 
 ## Usage
 
+### 1. Bootstrap (Generate Data)
+Generate physics-grounded topology data without requiring FreeCAD:
 ```bash
-# Full pipeline
-python quickstart.py --all --config pipeline_config.json
-
-# Individual steps
-python quickstart.py --step 2                          # extract FEM data
-python quickstart.py --step 3 --epochs 200             # train VAE
-python quickstart.py --step 4 --n-iter 50              # Bayesian optimisation
-python quickstart.py --step 5                          # export best design
-
-# Direct optimisation
-python optimization_engine.py --model-checkpoint checkpoints/vae_best.pth --n-iterations 100
-python optimization_engine.py --model-checkpoint checkpoints/vae_best.pth --voxel-fem
-
-# Voxel FEM unit test (10x10x10 cube, verifies ccx + .frd parser)
-python voxel_fem.py --test
-
-# Synthetic end-to-end test (no FreeCAD required)
-python synthetic_test.py
+python quickstart.py --topo-data --n-samples 200
 ```
 
-Set `"geometry_type"` in `sim_config.json` to switch geometry (`cantilever` | `lbracket` | `tapered` | `ribbed`).
+### 2. Train VAE
+```bash
+python quickstart.py --step 3 --epochs 300 --batch-size 32
+```
+
+### 3. Optimize Designs
+Run Bayesian optimization with topology refinement enabled:
+```bash
+python quickstart.py --step 4 --n-iter 50 --topo-refine
+```
+
+### 4. Export Best Result
+```bash
+python quickstart.py --step 5
+```
 
 ---
 
-## Configuration
+## Geometry Families
 
-| File | Purpose |
-|------|---------|
-| `pipeline_config.json` | VAE dims, learning rate, voxel resolution, BO acquisition |
-| `sim_config.json` | Geometry type, FEM weights (stress/compliance/mass), yield limit |
-| `materials.json` | Material properties (E, Poisson, density, thermal) |
+| Geometry | Fixed face | Load face | Physics Backend |
+|----------|-----------|-----------|-----------------|
+| `cantilever` | x-min | x-max | FreeCAD / SIMP |
+| `lbracket` | z-min | x-max | FreeCAD / SIMP |
+| `tapered` | x-min | x-max | FreeCAD / SIMP |
+| `ribbed` | x-min | x-max | FreeCAD / SIMP |
 
 ---
 
-## Hardware notes (RTX 5080 / Blackwell)
+## Verification
 
-Install torch from the `cu128` index — the `cu121` build does not include sm_120 kernels.
+Run the comprehensive unit test suite:
+```bash
+python -m pytest tests/test_simp_solver.py
+```
 
-The RTX 5080 triggers a cuBLAS batched GEMM crash for batch >= 2 in CUDA 12.8. `blackwell_compat.py` routes BoTorch GP models to CPU automatically. See `CLAUDE.md` for full details.
+---
+
+## Hardware Notes (Blackwell)
+
+The RTX 50 series requires `torch` from the `cu128` index for sm_120 support. Due to a cuBLAS driver bug in CUDA 12.8 (batched GEMM crash), BoTorch GP models are automatically routed to CPU via `blackwell_compat.py`. VAE training and SIMP GPU solving utilize full CUDA acceleration.
 
 ---
 

@@ -109,150 +109,121 @@ class PipelineConfig:
         self.config[key] = value
 
 
+def step_0_generate_topo_data(config: PipelineConfig, n_samples: int = 200):
+    logger.info("=" * 60)
+    logger.info(f"STEP 0: Generate Topology Data ({n_samples} samples)")
+    logger.info("=" * 60)
+    try:
+        from topology.topo_data_gen import TopoDataGenerator
+        import subprocess
+        import sys
+    except ImportError:
+        logger.error("Topology generator modules not found")
+        return False
+
+    gen = TopoDataGenerator(output_dir=config['fem_data_output'])
+    gen.generate(n_samples=n_samples)
+    
+    logger.info("Rebuilding dataset.pt...")
+    cmd = [sys.executable, "rebuild_dataset.py", 
+           "--fem-dir", config['fem_data_output'],
+           "--resolution", str(config['voxel_resolution'])]
+    subprocess.run(cmd, check=True)
+    return True
+
+
 def step_1_setup_freecad(config: PipelineConfig):
-    logger.info("=" * 60)
-    logger.info("STEP 1: FreeCAD Setup (Manual)")
-    logger.info("=" * 60)
-    project_dir = Path(config['freecad_project_dir'])
-    project_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("=" * 60 + "\nSTEP 1: Setup FreeCAD Environment\n" + "=" * 60)
+    return True
 
 
 def step_2_extract_fem_data(config: PipelineConfig):
-    logger.info("=" * 60)
-    logger.info("STEP 2: Extract FEM Data")
-    logger.info("=" * 60)
+    logger.info("=" * 60 + "\nSTEP 2: Run FEM Data Pipeline\n" + "=" * 60)
     try:
-        from fem_data_pipeline import DataPipeline
+        from fem.data_pipeline import DataPipeline
     except ImportError:
-        logger.error("fem_data_pipeline.py not found")
+        logger.error("DataPipeline module not found")
         return None
-    pipeline = DataPipeline(
-        freecad_project_dir=config['freecad_project_dir'],
-        output_dir=config['fem_data_output']
-    )
+    pipeline = DataPipeline(config['freecad_project_dir'], config['fem_data_output'])
     return pipeline.process_all_designs()
 
 
 def step_3_train_vae(config: PipelineConfig, train_loader, val_loader):
-    logger.info("=" * 60)
-    logger.info("STEP 3: Train VAE Generative Model")
-    logger.info("=" * 60)
+    logger.info("=" * 60 + "\nSTEP 3: Train Design VAE\n" + "=" * 60)
     try:
         from vae_design_model import DesignVAE, VAETrainer
-    except ImportError:
-        logger.error("vae_design_model.py not found")
-        return None
-    device = config['device']
-    model = DesignVAE(input_shape=tuple(config.config.get('input_shape', [64, 64, 64])), latent_dim=config['latent_dim'])
-    trainer = VAETrainer(model, train_loader, val_loader, device=device,
-                        lr=config['learning_rate'], beta=config['beta_vae'],
-                        epochs=config['epochs'])
+    except ImportError: return None
+    model = DesignVAE(input_shape=tuple(config['input_shape']), latent_dim=config['latent_dim'])
+    trainer = VAETrainer(model, train_loader, val_loader, device=config['device'], epochs=config['epochs'])
     trainer.fit(epochs=config['epochs'])
     return model
 
 
 def step_4_optimize_designs(config: PipelineConfig):
-    logger.info("=" * 60)
-    logger.info("STEP 4: Multi-Objective Bayesian Optimization")
-    logger.info("=" * 60)
+    logger.info("=" * 60 + "\nSTEP 4: Design Optimization Loop\n" + "=" * 60)
     try:
-        from optimization_engine import DesignOptimizer, BridgeEvaluator
+        from optimization_engine import DesignOptimizer
         from vae_design_model import DesignVAE
-    except ImportError:
-        logger.error("Optimization modules not found")
-        return None
-
-    device = config['device']
-    checkpoint = torch.load('checkpoints/vae_best.pth', map_location=device, weights_only=False)
-    vae = DesignVAE(input_shape=tuple(config.config.get('input_shape', [64, 64, 64])), latent_dim=config['latent_dim'])
+        from fem.voxel_fem import VoxelFEMEvaluator
+    except ImportError: return None, None
+    vae = DesignVAE(input_shape=tuple(config['input_shape']), latent_dim=config['latent_dim'])
+    checkpoint = torch.load('checkpoints/vae_best.pth', map_location=config['device'], weights_only=False)
     vae.load_state_dict(checkpoint['model_state_dict'])
-    vae = vae.to(device)
-
-    q = config.config.get('optimization', {}).get('parallel_evaluations', 4)
-    fem_evaluator = BridgeEvaluator(freecad_path=config.config.get('freecad_path'), output_dir=str(Path(config['output_dir']) / 'fem'), n_workers=q)
-    
-    optimizer = DesignOptimizer(vae, fem_evaluator, device=device, latent_dim=config['latent_dim'], 
-                                sim_cfg={'geometry_type': config.config.get('geometry_type', 'cantilever'),
-                                         'w_stress': config.config.get('performance_weights', {}).get('stress', 1.0),
-                                         'w_mass': config.config.get('performance_weights', {}).get('mass', 0.01),
-                                         'max_stress_mpa': config.config.get('performance_targets', {}).get('max_stress_mpa', 40.0)})
-
-    n_iter = max(1, config['n_optimization_iterations'] // q)
-    logger.info(f"Starting MOBO: {n_iter} rounds of {q} designs...")
-    best_z, best_y = optimizer.run_optimization(n_iterations=n_iter, q=q)
-    optimizer.save_results(config['output_dir'])
-    
-    return best_z, best_y
+    evaluator = VoxelFEMEvaluator(resolution=config['voxel_resolution'])
+    optimizer = DesignOptimizer(vae, evaluator, device=config['device'], latent_dim=config['latent_dim'])
+    return optimizer.optimize(n_iterations=config['n_optimization_iterations'])
 
 
 def step_5_export_design(config: PipelineConfig, best_z=None):
-    logger.info("=" * 60)
-    logger.info("STEP 5: Export Pareto-Optimal Designs")
-    logger.info("=" * 60)
+    logger.info("=" * 60 + "\nSTEP 5: Export Pareto-Optimal Designs\n" + "=" * 60)
     try:
         from vae_design_model import DesignVAE
         from pipeline_utils import VoxelConverter, ManufacturabilityConstraints
-    except ImportError:
-        logger.error("Modules not found")
-        return False
+    except ImportError: return False
 
     device = config['device']
     checkpoint = torch.load('checkpoints/vae_best.pth', map_location=device, weights_only=False)
-    vae = DesignVAE(input_shape=tuple(config.config.get('input_shape', [64, 64, 64])), latent_dim=config['latent_dim'])
+    vae = DesignVAE(input_shape=tuple(config.config.get('input_shape', [64,64,64])), latent_dim=config['latent_dim'])
     vae.load_state_dict(checkpoint['model_state_dict'])
     vae = vae.to(device)
 
-    # Load Pareto Front from history
     hist_path = Path(config['output_dir']) / "optimization_history.json"
-    if not hist_path.exists():
-        logger.error("No optimization history found. Run Step 4 first.")
-        return False
+    if not hist_path.exists(): return False
     
-    with open(hist_path, 'r') as f:
-        hist = json.load(f)
-    
+    with open(hist_path, 'r') as f: hist = json.load(f)
     pareto_front = hist.get("pareto_front", [])
     if not pareto_front:
-        logger.warning("No Pareto front found. Exporting single best.")
         designs_to_export = [{"name": "best_balanced", "z": best_z}] if best_z is not None else []
     else:
-        # Find Strongest, Lightest, and Balanced
         strongest = min(pareto_front, key=lambda x: x['stress'])
         lightest  = min(pareto_front, key=lambda x: x['mass'])
         balanced  = min(pareto_front, key=lambda x: (x['stress'] + 100 * x['mass']))
-        designs_to_export = [
-            {"name": "pareto_strongest", "z": strongest['latent_z']},
-            {"name": "pareto_lightest",  "z": lightest['latent_z']},
-            {"name": "pareto_balanced",  "z": balanced['latent_z']}
-        ]
+        designs_to_export = [{"name": "pareto_strongest", "z": strongest['latent_z']},
+                             {"name": "pareto_lightest",  "z": lightest['latent_z']},
+                             {"name": "pareto_balanced",  "z": balanced['latent_z']}]
 
     output_dir = Path(config['output_dir']) / 'exported_designs'
     output_dir.mkdir(parents=True, exist_ok=True)
-    mfg = ManufacturabilityConstraints(config=config.config)
-    res = config['voxel_resolution']
+    mfg, res = ManufacturabilityConstraints(config=config.config), config['voxel_resolution']
 
     for d in designs_to_export:
         z = torch.tensor(d['z']).float().unsqueeze(0).to(device)
-        with torch.no_grad():
-            voxels = vae.decode(z).squeeze().cpu().numpy()
-        
+        with torch.no_grad(): voxels = vae.decode(z).squeeze().cpu().numpy()
         voxels = mfg.apply_constraints(voxels, voxel_size=1.0/res)
         if np.max(voxels) < 0.5: continue
-        
         mesh = VoxelConverter.voxel_to_mesh(voxels, voxel_size=1.0/res, bbox=hist.get("best_bbox"))
         if mesh:
             import trimesh
-            m = trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces'])
-            m.export(str(output_dir / f"{d['name']}.stl"))
-            logger.info(f"Exported {d['name']}.stl")
-
+            trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces']).export(str(output_dir / f"{d['name']}.stl"))
     return True
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--step', type=int, choices=[1, 2, 3, 4, 5])
+    parser.add_argument('--step', type=int, choices=[0, 1, 2, 3, 4, 5])
     parser.add_argument('--all', action='store_true')
+    parser.add_argument('--topo-data', action='store_true', help='Bootstrap by generating topology data')
+    parser.add_argument('--n-samples', type=int, default=200, help='Number of topo samples to generate')
     parser.add_argument('--n-iter', type=int)
     parser.add_argument('--epochs', type=int, help='Override epochs for step 3')
     parser.add_argument('--batch-size', type=int, help='Override batch_size for step 3')
@@ -265,6 +236,10 @@ if __name__ == "__main__":
     if args.epochs: config['epochs'] = args.epochs
     if args.batch_size: config['batch_size'] = args.batch_size
     if args.results_dir: config['output_dir'] = args.results_dir
+
+    if args.topo_data or args.step == 0:
+        step_0_generate_topo_data(config, n_samples=args.n_samples)
+        if args.step == 0: exit(0)
 
     if args.all:
         step_1_setup_freecad(config)

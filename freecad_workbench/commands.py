@@ -61,6 +61,23 @@ class CmdSetSeedPart:
 FreeCADGui.addCommand("GenDesign_SetSeedPart", CmdSetSeedPart())
 
 
+# ── Add Preserved Region ──────────────────────────────────────────────────────
+
+class CmdAddPreservedRegion:
+    def GetResources(self):
+        return {"MenuText": "Add Preserved Region", "ToolTip": "Mark a volume as non-design domain (always solid)"}
+
+    def IsActive(self):
+        return FreeCAD.ActiveDocument is not None
+
+    def Activated(self):
+        from preserved_region_obj import AddPreservedRegionPanel
+        FreeCADGui.Control.showDialog(AddPreservedRegionPanel())
+
+
+FreeCADGui.addCommand("GenDesign_AddPreservedRegion", CmdAddPreservedRegion())
+
+
 # ── Export Config ─────────────────────────────────────────────────────────────
 
 class CmdExportConfig:

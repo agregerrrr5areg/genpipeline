@@ -20,7 +20,7 @@ import torch
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).parent))
-from fem_data_pipeline import VoxelGrid, FEMDataset, DesignSample
+from fem.data_pipeline import VoxelGrid, FEMDataset, DesignSample
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
@@ -28,24 +28,53 @@ log = logging.getLogger(__name__)
 
 def load_pairs(fem_dir: Path, min_stress: float = 1.0) -> list:
     """Return list of (stl_path, metrics_dict, stem) for all valid paired files."""
+    import pandas as pd
     pairs = []
     by_geom: dict = {}
     skipped = 0
 
-    for json_path in sorted(fem_dir.glob("*_fem_results.json")):
-        stem = json_path.stem.replace("_fem_results", "")
-        stl_path = fem_dir / f"{stem}_mesh.stl"
-        if not stl_path.exists():
-            skipped += 1
-            continue
-        with open(json_path) as f:
-            d = json.load(f)
-        if d.get("stress_max", 0) < min_stress and d.get("compliance", 0) == 0:
-            skipped += 1
-            continue
-        pairs.append((stl_path, d, stem))
-        geom = stem[:4]
-        by_geom[geom] = by_geom.get(geom, 0) + 1
+    parquet_path = fem_dir / "results.parquet"
+    if parquet_path.exists():
+        log.info(f"Loading results from Parquet: {parquet_path}")
+        df = pd.read_parquet(parquet_path)
+        for _, row in df.iterrows():
+            stem = row['source_file'].replace("_fem_results.json", "") if 'source_file' in row else Path(row['geometry_path']).stem.replace("_mesh", "")
+            stl_path = Path(row['geometry_path'])
+            
+            if not stl_path.exists():
+                skipped += 1
+                continue
+                
+            if row.get("stress_max", 0) < min_stress and row.get("compliance", 0) == 0:
+                skipped += 1
+                continue
+                
+            metrics = {
+                "stress_max": row.get("stress_max", 0),
+                "stress_mean": row.get("stress_mean", 0),
+                "compliance": row.get("compliance", 0),
+                "mass": row.get("mass", 0),
+                "parameters": {k.replace("param_", ""): v for k, v in row.items() if k.startswith("param_")},
+                "bbox": None # or load if available
+            }
+            pairs.append((stl_path, metrics, stem))
+            geom = stem[:4]
+            by_geom[geom] = by_geom.get(geom, 0) + 1
+    else:
+        for json_path in sorted(fem_dir.glob("*_fem_results.json")):
+            stem = json_path.stem.replace("_fem_results", "")
+            stl_path = fem_dir / f"{stem}_mesh.stl"
+            if not stl_path.exists():
+                skipped += 1
+                continue
+            with open(json_path) as f:
+                d = json.load(f)
+            if d.get("stress_max", 0) < min_stress and d.get("compliance", 0) == 0:
+                skipped += 1
+                continue
+            pairs.append((stl_path, d, stem))
+            geom = stem[:4]
+            by_geom[geom] = by_geom.get(geom, 0) + 1
 
     log.info(f"Found {len(pairs)} valid pairs (skipped {skipped} empty/unmatched)")
     log.info("By geometry: " + "  ".join(f"{k}={v}" for k, v in sorted(by_geom.items())))
@@ -79,11 +108,14 @@ def build_samples(pairs: list, resolution: int) -> list:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fem-dir",    default="./fem_data")
+    parser.add_argument("--fem-dir", type=str, default="./fem/data")
     parser.add_argument("--resolution", type=int, default=64)
     parser.add_argument("--val-frac",   type=float, default=0.2)
     parser.add_argument("--seed",       type=int, default=42)
     args = parser.parse_args()
+
+    from fem.data_pipeline import DataPipeline
+    pipeline = DataPipeline(args.fem_dir, args.fem_dir)
 
     fem_dir = Path(args.fem_dir)
     log.info(f"Scanning {fem_dir} for mesh/results pairs ...")

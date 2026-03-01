@@ -86,6 +86,25 @@ def collect_loads(doc):
     return out
 
 
+def collect_preserved_regions(doc):
+    """
+    Find all PreservedRegion objects and extract the world-space bounding box
+    of their linked geometry.
+    """
+    regions = []
+    for obj in doc.Objects:
+        if hasattr(obj, "Proxy") and obj.Proxy.__class__.__name__ == "PreservedRegionObject":
+            shape_ref = obj.RegionShape
+            if shape_ref and hasattr(shape_ref, "Shape"):
+                bb = shape_ref.Shape.BoundBox
+                regions.append({
+                    "xmin": bb.XMin, "xmax": bb.XMax,
+                    "ymin": bb.YMin, "ymax": bb.YMax,
+                    "zmin": bb.ZMin, "zmax": bb.ZMax
+                })
+    return regions
+
+
 def find_seed_part(doc):
     for obj in doc.Objects:
         if obj.Name.startswith("SeedPart") and hasattr(obj, "GeometryType"):
@@ -126,6 +145,7 @@ def export_config(doc, output_path: str = None) -> dict:
     seed = find_seed_part(doc)
     constraints = collect_constraints(doc)
     loads       = collect_loads(doc)
+    preserved   = collect_preserved_regions(doc)
 
     fixed_normal, load_normal, force_dir, force_n = _derive_bc_from_constraints(
         constraints, loads
@@ -152,6 +172,7 @@ def export_config(doc, output_path: str = None) -> dict:
         "wsl2_pipeline_path":  seed.WSL2PipelinePath  if seed else "/home/genpipeline",
         "constraints":         constraints,
         "loads":               loads,
+        "preserved_regions":   preserved,
         # BC config consumed by freecad_bridge / run_fem_variant
         "fixed_face_normal":   bc["fixed_face_normal"],
         "load_face_normal":    bc["load_face_normal"],

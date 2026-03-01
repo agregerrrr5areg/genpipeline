@@ -131,13 +131,18 @@ class DesignVAE(nn.Module):
         h = h.view(-1, self._ENC_CH, self._enc_sp, self._enc_sp, self._enc_sp)
         return self.decoder(h)
 
+    def reparameterize(self, mu, logvar):
+        if mu.is_cuda:
+            import cuda_kernels
+            return cuda_kernels.fused_reparameterize(mu, logvar)
+        return mu + torch.randn_like(mu) * torch.exp(0.5 * logvar)
+
     def decode(self, z):
         return torch.sigmoid(self.decode_logits(z))
 
     def forward(self, x):
         mu, logvar = self.encode(x)
-        std = torch.exp(0.5 * logvar)
-        z   = mu + torch.randn_like(std) * std
+        z = self.reparameterize(mu, logvar)
         x_recon = self.decode_logits(z)
         with torch.autocast('cuda', enabled=False):
             perf_pred  = self.performance_head(z.float())

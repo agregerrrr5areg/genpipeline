@@ -21,7 +21,6 @@ Usage:
     python quickstart.py --step 3 --epochs 100
 """
 
-import argparse
 import concurrent.futures
 import json
 import logging
@@ -191,7 +190,7 @@ def run_extraction(freecad_cmd: str, fcstd_wsl: str,
 # ── Dataset builder ────────────────────────────────────────────────────────────
 
 def build_dataset(output_dir: Path, voxel_resolution: int = 64):
-    from fem_data_pipeline import FEMDataset, DesignSample, VoxelGrid
+    from fem.data_pipeline import FEMDataset, DesignSample, VoxelGrid
 
     json_files = sorted(output_dir.glob("*_fem_results.json"))
     logger.info(f"Building dataset from {len(json_files)} result files...")
@@ -403,137 +402,15 @@ def generate_variants(freecad_cmd: str, output_dir: Path,
     return train_loader, val_loader
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ── Module Exports ─────────────────────────────────────────────────────────────
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="WSL2 bridge: extract FEM data from Windows FreeCAD"
-    )
-    subparsers = parser.add_subparsers(dest="command")
-
-    # ── extract: pull results from existing .FCStd files ──────────────────
-    ext_p = subparsers.add_parser("extract", help="Extract FEM from existing .FCStd files")
-    ext_p.add_argument("--designs-dir", required=True)
-    ext_p.add_argument("--output-dir",  default="./fem_data")
-    ext_p.add_argument("--freecad-path", default=None)
-    ext_p.add_argument("--voxel-resolution", type=int, default=32)
-
-    # ── generate: create parametric cantilever variants from scratch ───────
-    gen_p = subparsers.add_parser("generate",
-        help="Generate parametric cantilever beam variants and run FEM")
-    gen_p.add_argument("--n-variants",       type=int,   default=50)
-    gen_p.add_argument("--h-min",            type=float, default=5.0,
-                       help="Min beam height mm")
-    gen_p.add_argument("--h-max",            type=float, default=20.0,
-                       help="Max beam height mm")
-    gen_p.add_argument("--r-min",            type=float, default=0.0,
-                       help="Min hole radius mm (0 = solid)")
-    gen_p.add_argument("--r-max",            type=float, default=8.0,
-                       help="Max hole radius mm")
-    gen_p.add_argument("--output-dir",       default="./fem_data")
-    gen_p.add_argument("--freecad-path",     default=None)
-    gen_p.add_argument("--voxel-resolution", type=int, default=32)
-    gen_p.add_argument("--seed",             type=int, default=42)
-    gen_p.add_argument("--n-workers",        type=int, default=4, help="Number of parallel FreeCAD processes")
-    gen_p.add_argument("--geometry-types", nargs="+",
-                       default=["cantilever"],
-                       choices=["cantilever", "lbracket", "tapered", "ribbed"],
-                       help="Geometry types to cycle through")
-
-    # ── run: single variant ──────────────────────────────────────────────
-    run_p = subparsers.add_parser("run", help="Run a single FEM variant")
-    run_p.add_argument("--h-mm", type=float, required=True)
-    run_p.add_argument("--r-mm", type=float, required=True)
-    run_p.add_argument("--geometry", default="cantilever")
-    run_p.add_argument("--output-dir", default="./fem_data")
-    run_p.add_argument("--freecad-path", default=None)
-
-    # Backwards-compat: no subcommand → treat as extract (requires --designs-dir)
-    parser.add_argument("--designs-dir",     default=None)
-    parser.add_argument("--output-dir",      default="./fem_data")
-    parser.add_argument("--freecad-path",    default=None)
-    parser.add_argument("--voxel-resolution",type=int, default=32)
-
-    args = parser.parse_args()
-
-    # ── Find FreeCAD ──────────────────────────────────────────────────────
-    freecad_path_arg = getattr(args, "freecad_path", None)
-    try:
-        freecad_cmd = find_freecad_cmd(freecad_path_arg)
-    except FileNotFoundError as e:
-        logger.error(str(e))
-        return
-
-    output_dir = Path(getattr(args, "output_dir", "./fem_data"))
-
-    # ── generate subcommand ───────────────────────────────────────────────
-    if args.command == "generate":
-        generate_variants(
-            freecad_cmd  = freecad_cmd,
-            output_dir   = output_dir,
-            n            = args.n_variants,
-            h_range      = (args.h_min, args.h_max),
-            r_range      = (args.r_min, args.r_max),
-            voxel_resolution = args.voxel_resolution,
-            seed         = args.seed,
-            n_workers    = args.n_workers,
-            geometry_types = args.geometry_types,
-        )
-        return
-
-    # ── run subcommand ──────────────────────────────────────────────────
-    if args.command == "run":
-        variant_win = deploy_variant_script()
-        result = run_variant(
-            freecad_cmd,
-            args.h_mm,
-            args.r_mm,
-            str(output_dir),
-            variant_win,
-            geometry=args.geometry
-        )
-        if result:
-            logger.info(f"Success: {result}")
-        else:
-            logger.error("Failed to run variant")
-        return
-
-    # ── extract subcommand (or legacy positional mode) ────────────────────
-    designs_dir_arg = getattr(args, "designs_dir", None)
-    if not designs_dir_arg:
-        parser.error("Specify a subcommand (generate / extract) or --designs-dir")
-
-    extractor_win = deploy_extractor()
-
-    designs_dir = Path(designs_dir_arg)
-    if not designs_dir.exists():
-        logger.error(f"Designs directory not found: {designs_dir}")
-        return
-
-    fcstd_files = sorted(designs_dir.glob("**/*.FCStd"))
-    logger.info(f"Found {len(fcstd_files)} .FCStd files in {designs_dir}")
-    if not fcstd_files:
-        logger.error("No .FCStd files found.")
-        return
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    ok, fail = 0, 0
-    for i, fcstd in enumerate(fcstd_files):
-        logger.info(f"[{i+1}/{len(fcstd_files)}] {fcstd.name}")
-        result = run_extraction(freecad_cmd, str(fcstd), str(output_dir), extractor_win)
-        if result:
-            ok += 1
-        else:
-            fail += 1
-
-    logger.info(f"Extraction: {ok} succeeded, {fail} failed")
-
-    train_loader, val_loader = build_dataset(output_dir, args.voxel_resolution)
-    if train_loader:
-        logger.info("Dataset ready. Next step:")
-        logger.info("  python quickstart.py --step 3 --epochs 100")
-
-
-if __name__ == "__main__":
-    main()
+__all__ = [
+    "find_freecad_cmd",
+    "run_extraction",
+    "run_variant",
+    "generate_variants",
+    "build_dataset",
+    "deploy_extractor",
+    "deploy_variant_script",
+    "wsl_to_windows",
+]

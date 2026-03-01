@@ -1,6 +1,6 @@
 {
   "freecad_project_dir": "./freecad_designs",
-  "fem_data_output": "./fem_data",
+  "fem_data_output": "./fem/data",
   "voxel_resolution": 64,
   "use_sdf": false,
   "latent_dim": 32,

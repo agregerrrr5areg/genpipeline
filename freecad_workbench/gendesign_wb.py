@@ -4,7 +4,7 @@ import FreeCADGui
 
 
 class GenDesignWorkbench(FreeCADGui.Workbench):
-    MenuText = "GenDesign"
+    MenuText = "&GenDesign"
     ToolTip  = "Generative design: constraints, loads, VAE optimisation"
     Icon     = ""          # TODO: embed SVG icon path here
 
@@ -13,15 +13,17 @@ class GenDesignWorkbench(FreeCADGui.Workbench):
         self.appendToolbar("GenDesign", [
             "GenDesign_AddConstraint",
             "GenDesign_AddLoad",
+            "GenDesign_AddPreservedRegion",
             "GenDesign_SetSeedPart",
             "Separator",
             "GenDesign_ExportConfig",
             "GenDesign_RunOptimisation",
             "GenDesign_ImportResult",
         ])
-        self.appendMenu("GenDesign", [
+        self.appendMenu("&GenDesign", [
             "GenDesign_AddConstraint",
             "GenDesign_AddLoad",
+            "GenDesign_AddPreservedRegion",
             "GenDesign_SetSeedPart",
             "Separator",
             "GenDesign_ExportConfig",

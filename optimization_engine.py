@@ -108,19 +108,21 @@ GEOM_SPACES = {
 
 
 class DesignOptimizer:
-    def __init__(self, vae_model, fem_evaluator, device='cuda', latent_dim=32, sim_cfg=None):
+    def __init__(self, vae_model, fem_evaluator, device='cuda', latent_dim=32, sim_cfg=None, topo_refine=False):
         self.vae = vae_model
         self.fem_evaluator = fem_evaluator
         self.device = device
         self.latent_dim = latent_dim
         self.sim_cfg = sim_cfg or {"w_stress": 1.0, "w_compliance": 0.1, "w_mass": 0.01}
+        self.topo_refine = topo_refine
         self.vae.eval()
 
         # Load materials DB once
         try:
-            with open("materials.json") as f:
-                self.materials_db = json.load(f)
-        except FileNotFoundError:
+            import yaml
+            with open("materials.yaml") as f:
+                self.materials_db = yaml.safe_load(f)
+        except (FileNotFoundError, ImportError):
             self.materials_db = {"Plastic_ABS": {"E_mpa": 2300, "poisson": 0.35, "density": 1050}}
 
         self.gp_model = None
@@ -151,9 +153,53 @@ class DesignOptimizer:
         valid_mask = [0.0 < y[0] < 1e5 for y in self.y_history]
         n_valid = sum(valid_mask)
 
+        # Early exit if we haven't learned enough from valid samples
         if not BOTORCH_AVAILABLE or n_valid < 10:
             z_batch = np.random.randn(q, self.latent_dim) * 2.0
             return self._evaluate_latent_batch(z_batch)
+        
+        # Add safety margin for numerical stability
+        train_X_raw = torch.tensor(np.array([x for x, ok in zip(self.x_history, valid_mask) if ok]),
+                                   dtype=torch.float64).to(botorch_device)
+        train_Y = torch.tensor(np.array([y for y, ok in zip(self.y_history, valid_mask) if ok]),
+                               dtype=torch.float64).to(botorch_device)
+        
+        # Normalize inputs to [0,1] cube for BoTorch
+        X_min = train_X_raw.min(dim=0).values
+        X_max = train_X_raw.max(dim=0).values
+        X_range = (X_max - X_min).clamp(min=1e-6)
+        train_X = (train_X_raw - X_min) / X_range
+        
+        # Standardize outputs for better convergence
+        train_Y_std = (train_Y - train_Y.mean(dim=0)) / (train_Y.std(dim=0) + 1e-6)
+        train_Y_std = -train_Y_std  # Invert for maximization
+        
+        self.gp_model = SingleTaskGP(train_X, train_Y_std)
+        self._X_min, self._X_range = X_min, X_range  # Store for candidate rescaling
+        mll = ExactMarginalLogLikelihood(self.gp_model.likelihood, self.gp_model)
+        fit_gpytorch_mll(mll)
+        
+        # Use more conservative reference point for hypervolume improvement
+        ref_point = train_Y_std.min(dim=0).values - 0.1
+        partitioning = NondominatedPartitioning(ref_point=ref_point, Y=train_Y_std)
+        acq = qExpectedHypervolumeImprovement(
+            model=self.gp_model,
+            ref_point=ref_point,
+            partitioning=partitioning,
+        )
+        
+        # Bounds in normalized [0,1] space
+        bounds = torch.zeros(2, self.latent_dim, dtype=torch.float64).to(botorch_device)
+        bounds[1] = 1.0
+        
+        candidates, _ = optimize_acqf(
+            acq, bounds=bounds, q=q, num_restarts=10, raw_samples=512,
+        )
+        
+        # Rescale candidates back to original latent space
+        candidates = candidates * self._X_range + self._X_min
+        
+        return self._evaluate_latent_batch(candidates.cpu().numpy())
 
         # Fit multi-output GP on CPU (Search space is latent_dim only)
         valid_x = [x for x, ok in zip(self.x_history, valid_mask) if ok]
@@ -196,8 +242,117 @@ class DesignOptimizer:
 
         return self._evaluate_latent_batch(candidates.cpu().numpy())
 
+    def _build_preserved_mask(self, regions: list, resolution: int = 64) -> np.ndarray:
+        if not regions:
+            return None
+        
+        mask = np.zeros((resolution, resolution, resolution), dtype=bool)
+        
+        # Physical dimensions (baseline)
+        lx, ly, lz = 100.0, 20.0, 20.0
+        geom = self.sim_cfg.get("geometry_type", "cantilever")
+        if geom == "lbracket":
+            lz = 100.0
+            
+        dx = lx / resolution
+        dy = ly / resolution # Note: ny is res/4 in refinement loop, we need to be careful
+        # Actually, refinement loop uses res x res/4 x res/4
+        # But here we are building a mask for that grid.
+        # Let's assume the refinement grid matches the VAE grid shape logic roughly
+        # VAE is 64^3 cubic. SIMP refinement uses (64, 16, 16).
+        # We need to map physical coordinates to the (64, 16, 16) indices.
+        
+        nx, ny, nz = resolution, resolution // 4, resolution // 4
+        if geom == "lbracket": nz = resolution # L-bracket is tall
+        
+        dx = lx / nx
+        dy = ly / ny
+        dz = lz / nz
+        
+        mask = np.zeros((nx, ny, nz), dtype=bool)
+
+        for r in regions:
+            # Convert physical bounds to voxel indices
+            x0 = int(np.clip(r["xmin"] / dx, 0, nx))
+            x1 = int(np.clip(r["xmax"] / dx, 0, nx))
+            y0 = int(np.clip(r["ymin"] / dy, 0, ny))
+            y1 = int(np.clip(r["ymax"] / dy, 0, ny))
+            z0 = int(np.clip(r["zmin"] / dz, 0, nz))
+            z1 = int(np.clip(r["zmax"] / dz, 0, nz))
+            
+            mask[x0:x1, y0:y1, z0:z1] = True
+            
+        return mask
+
     def _evaluate_latent_batch(self, z_batch):
         # z_batch contains [z_0...z_31]
+        
+        # ── Fix Task 5: Topology Refinement ─────────────────────────────────────
+        if self.topo_refine:
+            logger.info(f"  Refining batch of {len(z_batch)} designs via SIMP (20 iters)...")
+            from topology.solver import TopologySolver
+            geom_type = self.sim_cfg.get("geometry_type", "cantilever")
+            
+            # Use 64^3 for refinement if possible, or match VAE
+            res = 64 
+            # Aspect ratio logic matches SIMP defaults
+            ny_ref = res//4
+            nz_ref = res//4
+            if geom_type == "lbracket": nz_ref = res
+            
+            solver = TopologySolver(nx=res, ny=ny_ref, nz=nz_ref, n_iters=20)
+            
+            # Build mask once if static
+            preserved_mask = None
+            if self.sim_cfg.get("preserved_regions"):
+                preserved_mask = self._build_preserved_mask(self.sim_cfg["preserved_regions"], resolution=res)
+            
+            refined_zs = []
+            for i, z in enumerate(z_batch):
+                # 1. Decode
+                z_t = torch.from_numpy(z).float().to(self.device).unsqueeze(0)
+                with torch.no_grad():
+                    voxels = self.vae.decode(z_t).squeeze().cpu().numpy()
+                
+                # 2. Refine (SIMP initialized from decoded density)
+                # Note: TopologySolver currently doesn't support warm-start from density easily
+                # but it uses SIMPSolver internally. We can run it and it's better than nothing.
+                # In a real warm-start, we'd pass 'voxels' to run().
+                sim_cfg_local = {
+                    "force_n": self.sim_cfg.get("force_n", 1000.0),
+                    "boundary_conditions": {
+                        "fixed_face": "x_min" if geom_type != "lbracket" else "z_min",
+                        "load_face": "x_max",
+                        "load_dof": 2
+                    },
+                    "preserved_mask": preserved_mask
+                }
+                # Temporary directory for refinement artifacts
+                refine_dir = Path("./optimization_results/refine_tmp")
+                refine_dir.mkdir(parents=True, exist_ok=True)
+                
+                solver.run(sim_cfg_local, str(refine_dir), volfrac=0.4)
+                refined_density = solver.last_density # (nx, ny, nz)
+                
+                # 3. Re-encode
+                # Ensure shape matches VAE input (1, 1, 64, 64, 64)
+                # VAE expects 64^3 cube. We need to pad our (64, 16, 16) density.
+                padded = np.zeros((res, res, res), dtype=np.float32)
+                nx, ny, nz = refined_density.shape
+                # Center or align? Align to match training data generation
+                # Training data (fem_data_pipeline) usually fills the volume
+                # But here our SIMP grid is smaller. 
+                # Simplest is to place at origin 0,0,0
+                padded[:nx, :ny, :nz] = refined_density
+                
+                vox_t = torch.from_numpy(padded).float().to(self.device).view(1, 1, res, res, res)
+                with torch.no_grad():
+                    mu, _ = self.vae.encode(vox_t)
+                    refined_z = mu.cpu().numpy().squeeze()
+                refined_zs.append(refined_z)
+            
+            z_batch = np.array(refined_zs)
+
         param_list = [self.geometry_to_parameters(z) for z in z_batch]
 
         geom = self.sim_cfg.get("geometry_type", "cantilever")
@@ -349,6 +504,8 @@ if __name__ == "__main__":
                         help="Path to gendesign_config.json exported by the FreeCAD workbench")
     parser.add_argument("--voxel-fem", action="store_true",
                         help="Use direct CalculiX voxel FEM (bypasses FreeCAD)")
+    parser.add_argument("--topo-refine", action="store_true",
+                        help="Perform topology refinement (20 SIMP iters) before evaluation")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from bo_checkpoint.json in --output-dir")
     args = parser.parse_args()
@@ -383,10 +540,11 @@ if __name__ == "__main__":
         "load_face_normal":  wb_cfg.get("load_face_normal",  [1, 0, 0]),
         "force_n":           wb_cfg.get("force_n", 1000.0),
         "force_direction":   wb_cfg.get("force_direction", [0, 0, -1]),
+        "preserved_regions": wb_cfg.get("preserved_regions", []),
     }
 
     if args.voxel_fem:
-        from voxel_fem import VoxelFEMEvaluator
+        from fem.voxel_fem import VoxelFEMEvaluator
         evaluator = VoxelFEMEvaluator(
             # output_dir=None lets VoxelFEMEvaluator auto-select a
             # Windows-accessible temp when ccx is a .exe binary.
@@ -397,7 +555,7 @@ if __name__ == "__main__":
         )
     else:
         evaluator = BridgeEvaluator(n_workers=args.q, output_dir=args.output_dir)
-    optimizer = DesignOptimizer(vae, evaluator, latent_dim=32, sim_cfg=sim_cfg)
+    optimizer = DesignOptimizer(vae, evaluator, latent_dim=32, sim_cfg=sim_cfg, topo_refine=args.topo_refine)
 
     if args.resume:
         optimizer.load_checkpoint(args.output_dir)

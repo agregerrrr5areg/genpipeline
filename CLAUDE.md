@@ -106,8 +106,8 @@ python quickstart.py --step 4 --n-iter 50            # Bayesian optimization
 python quickstart.py --step 5                        # Export optimized design
 
 # Run individual modules directly
-python fem_data_pipeline.py --freecad-project ./freecad_designs --output-dir ./fem_data --voxel-resolution 32
-python vae_design_model.py --dataset-path ./fem_data/fem_dataset.pt --epochs 100 --latent-dim 16 --batch-size 8
+python fem/data_pipeline.py --freecad-project ./freecad_designs --output-dir ./fem/data --voxel-resolution 32
+python vae_design_model.py --dataset-path ./fem/data/fem_dataset.pt --epochs 100 --latent-dim 16 --batch-size 8
 python optimization_engine.py --model-checkpoint checkpoints/vae_best.pth --n-iterations 50
 ```
 
@@ -122,7 +122,7 @@ tensorboard --logdir ./logs   # http://localhost:6006
 
 ```
 FreeCAD (FEMbyGEN) → parametric variants → CalculiX FEM sims
-    → fem_data_pipeline.py  →  32³ voxel grids + FEM metrics  →  fem_dataset.pt
+    → fem/data_pipeline.py  →  32³ voxel grids + FEM metrics  →  fem/data/fem_dataset.pt
     → vae_design_model.py   →  trained 3D VAE  (checkpoints/vae_best.pth)
     → optimization_engine.py → Bayesian opt loop (GP surrogate + UCB acquisition)
     → decode best z → voxel → mesh → STL/STEP export
@@ -130,11 +130,29 @@ FreeCAD (FEMbyGEN) → parametric variants → CalculiX FEM sims
 
 ### Module Roles
 
-- **`fem_data_pipeline.py`** — reads `.FCStd` files, extracts FEM results (stress, compliance), exports meshes as STL, voxelizes to 32³ binary grids, creates 80/20 train/val PyTorch Dataset saved to `fem_data/`.
+- **`fem/data_pipeline.py`** — reads `.FCStd` files, extracts FEM results (stress, compliance), exports meshes as STL, voxelizes to 32³ binary grids, creates 80/20 train/val PyTorch Dataset saved to `fem/data/`.
 - **`vae_design_model.py`** — 3D convolutional VAE: `Encoder (3×Conv3D→FC) → latent μ/σ (16-dim) → Decoder (FC→3×ConvTranspose3D)` with a performance predictor head outputting stress/compliance/mass. Includes KL annealing and checkpoint management.
 - **`optimization_engine.py`** — wraps BoTorch GP + UCB acquisition. Each iteration: sample latent `z` → decode → run FEM in FreeCAD → update GP. Objective: `stress + 0.1×compliance + 0.01×mass`. History saved to `optimization_results/`.
-- **`utils.py`** — geometry voxelization helpers, manufacturability constraint checking (min feature size, max overhang angle), geometry metrics (volume, surface area, MOI), FreeCAD integration helpers.
-- **`quickstart.py`** — orchestrates all 5 steps; loads config from `pipeline_config.json`; `PipelineConfig` class merges defaults with file overrides.
+- **`pipeline_utils.py`** — Shared utilities for the generative design pipeline (merged from `utils.py`). Includes geometry voxelization helpers, manufacturability constraint checking (min feature size, max overhang angle), and JSON/numpy encoding.
+- **`topology/simp_solver.py`** — 3D SIMP topology optimization using a structured voxel grid and proper FEM-based compliance minimization (C3D8 elements). Supports dynamic boundary conditions (fixed_face, load_face, load_dof).
+- **`topology/simp_solver_gpu.py`** — PyTorch-based 3D SIMP solver for GPU (RTX 5080). Accelerates compliance minimization and sensitivity analysis using tensor operations.
+- **`topology/topo_data_gen.py`** — **SIMP-based Dataset Generator.** Runs `SIMPSolver` across diverse configurations for all 4 geometry families (cant/lbra/tape/ribb).
+    - **Pros:** Fast, no FreeCAD required, scales to thousands of samples, physics-based (compliance minimization).
+    - **Cons:** Approximated stress metrics, structural distribution may differ from parametric FreeCAD variants (distribution shift).
+- **`topology/solver.py`** — Orchestrates topology optimization, attempting `openlsto` and falling back to `SIMP` (GPU preferred). Automatically handles dynamic `voxel_size_mm` for STL export.
+- **`topology/mesh_export.py`** — Converts voxel density fields to STL using marching cubes.
+- **`freecad_workbench/preserved_region_obj.py`** — FeaturePython object for defining non-design domains (preserved regions) in FreeCAD.
+- **`quickstart.py`** — orchestrates all steps; includes `step 0` / `--topo-data` for one-command dataset bootstrapping without FreeCAD.
+
+### Quickstart Bootstrap
+```bash
+python quickstart.py --topo-data --n-samples 200  # Generate data and rebuild dataset.pt
+python quickstart.py --step 3 --epochs 100        # Train VAE
+python quickstart.py --step 4 --n-iter 50 --topo-refine  # Optimize with refined candidates
+```
+
+### MANDATE: No Non-Physical Synthetic Data
+**Strict Rule:** All training data must originate from physics-based simulations (FreeCAD/CalculiX or SIMP). **Non-physical 'synthetic' data** (e.g., random noise-based shapes, pure geometric heuristics without FEM validation) **is forbidden.** The model must exclusively learn from physically plausible mechanics to ensure engineering validity.
 
 ### Configuration
 
@@ -152,7 +170,8 @@ All hyperparameters live in `pipeline_config.json`. Key values:
 
 ```
 freecad_designs/        # Input .FCStd files from FEMbyGEN
-fem_data/               # Voxel grids, FEM metrics, fem_dataset.pt
+fem/                    # Unified physics folder
+  data/                 # Voxel grids, FEM metrics, fem_dataset.pt
 checkpoints/            # vae_best.pth + epoch snapshots
 logs/                   # TensorBoard events
 optimization_results/   # optimization_history.json, exported STL/STEP
