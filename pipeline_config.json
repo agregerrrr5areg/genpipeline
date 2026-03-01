@@ -3,7 +3,7 @@
   "fem_data_output": "./fem_data",
   "voxel_resolution": 64,
   "use_sdf": false,
-  "latent_dim": 16,
+  "latent_dim": 32,
   "batch_size": 32,
   "epochs": 300,
   "learning_rate": 0.0003,
