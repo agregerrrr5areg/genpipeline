@@ -1,6 +1,46 @@
 """
 Integration tests for the core decode→FEM path.
 
+PSEUDOCODE — what this file does end to end:
+─────────────────────────────────────────────
+  SETUP
+    load VAE weights from checkpoints/vae_best.pth
+    fix random seed → sample 4 latent vectors z[0..3]  (32-dim each)
+    probe for ccx binary (FreeCAD install or PATH)
+    probe for SIMD mesher extension (needs ninja + GCC)
+
+  TestDecodeAlwaysRuns  ← runs everywhere, no external tools needed
+    test_checkpoint_exists     : file exists on disk?
+    test_checkpoint_keys       : saved dict has expected keys + shapes?
+    test_decode_returns_correct_shape:
+        FOR each z IN z[0..3]:
+            z → VAE decoder (4³ → 8³ → 16³ → 32³ → 64³ conv-transpose)
+        ASSERT output shape == (4, 1, 64, 64, 64)
+    test_voxels_are_non_trivial:
+        FOR each z IN z[0..3]:
+            sigmoid(decode(z)) → voxel probabilities
+            occupancy = mean(probabilities)
+        ASSERT 5% ≤ occupancy ≤ 95%   (not all-empty, not all-solid)
+
+  TestFEMWithCCX  ← skipped if no ccx; individual tests skip if no SIMD
+    test_evaluate_returns_four_results:
+        FOR each z IN z[0..3]:
+            decode(z) → 64³ voxels
+            downsample 64³ → 32³
+            smooth voxels (gaussian blur + threshold)
+            build C3D8 hex mesh (one element per solid voxel)
+            write .inp file → run ccx.exe → parse .frd output
+        ASSERT each result has keys: stress, compliance, mass
+
+    test_at_least_one_non_sentinel:
+        same 4 evaluations as above
+        ASSERT at least 1 result has stress < 1e5 MPa  (not a sentinel failure)
+        ON FAIL: print failure_reason for each result to show where chain broke
+
+  SKIP LOGIC
+    _CCX_OK  → class-level skipif (ccx binary absent → skip whole class)
+    _SIMD_OK → per-test pytest.skip (ninja absent → skip individual test)
+
 TestDecodeAlwaysRuns — no external dependencies, always runs.
 TestFEMWithCCX       — skipped unless ccx is discoverable.
 """

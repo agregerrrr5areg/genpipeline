@@ -1,4 +1,50 @@
 # tests/test_vae_model.py
+#
+# PSEUDOCODE — what this file tests:
+# ────────────────────────────────────
+#   ALL tests skipped if CUDA is not available (pytestmark guard at module level)
+#
+#   Fixture: vae
+#     BUILD DesignVAE(latent_dim=32, input_shape=64³)
+#     MOVE to GPU (.cuda())
+#     SET eval mode
+#
+#   TestDesignVAEShapes
+#     test_param_count:
+#       COUNT all learnable parameters
+#       ASSERT 30M < count < 60M  (sanity check on architecture size)
+#
+#     test_forward_output_shapes:   ← skipped if CUDA extensions unavailable
+#       INPUT  x = random (2, 1, 64, 64, 64) on GPU, BF16 autocast
+#       CALL   vae(x):
+#                encode → mu, logvar (2, 32)
+#                reparameterize via fused CUDA kernel → z (2, 32)
+#                decode z → x_recon (2, 1, 64, 64, 64)
+#                performance head → perf (2, 3)  [stress, compliance, mass]
+#                parameter head   → params (2, 2) [h_mm, r_mm]
+#       ASSERT each output has expected shape
+#
+#     test_encode_returns_cpu_float32:
+#       INPUT  x on GPU, BF16 autocast
+#       CALL   encode(x) → mu, logvar
+#       ASSERT both are float32 on GPU  (FC layers upcast from BF16)
+#
+#     test_decode_output_range:
+#       INPUT  z = random (2, 32) on GPU
+#       CALL   decode(z) → voxel logits
+#       ASSERT output has no NaN/Inf  (numerical stability check)
+#
+#   TestDesignVAECheckpoint
+#     test_checkpoint_loads:
+#       SAVE random model state → LOAD it back → ASSERT weights match
+#
+#     test_production_checkpoint_loads:
+#       LOAD checkpoints/vae_best.pth (trained 300 epochs)
+#       ASSERT loads without error
+#
+#   _CUDA_EXT_OK = probe fused_reparameterize on a tiny tensor at import time
+#   @_CUDA_EXT_SKIP applied to test_forward_output_shapes (only test using full forward pass)
+#
 import sys
 from pathlib import Path
 import pytest
