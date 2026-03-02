@@ -1,5 +1,14 @@
 # GenPipeline Development Guide: VAE + Bayesian Optimisation
 
+## ⚠️ Known Issues (as of 2026-03-03)
+
+| Issue | Symptom | Workaround |
+|-------|---------|------------|
+| Blackwell cuBLAS batched GEMM crash | `CUBLAS_STATUS_INVALID_VALUE` on any `matmul` with `dim>2, batch≥2` on GPU | BoTorch GP stays on CPU via `blackwell_compat.py` |
+| ccx discovery via glob | If Windows FreeCAD install path changes, `VoxelFEMEvaluator` silently returns sentinel `1e6` | Set `CCX_PATH` env var explicitly |
+| beta_vae config mismatch | `pipeline_config.json` has `beta_vae=1.0`; design doc recommends `0.05` for 64³ with limited data | Ablation pending; current checkpoint trained at `1.0` |
+| Legacy BO result | `optimization_results/real_run.json` shows `best_voxel_shape: [32, 32, 32]` | This predates 64³ migration — treat as historical only |
+
 This document outlines the mathematical and architectural foundations of the GenPipeline project, specifically optimized for RTX 50 series (Blackwell) GPUs.
 
 ## 1. Variational Autoencoder (VAE) Architecture

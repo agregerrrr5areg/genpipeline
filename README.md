@@ -15,6 +15,22 @@ Generative design pipeline combining FreeCAD FEM simulation, 3D SIMP topology op
     
 ---
 
+## Current Status (2026-03-03)
+
+| Stage | Status | Notes |
+|-------|--------|-------|
+| FEM data generation | ✅ Complete | 10 variants, 1.4 s each via FreeCAD WSL2 bridge |
+| Dataset | ✅ Built | 32³ (2.8 MB) and 64³ (53 MB) `.pt` files |
+| VAE training | ✅ 300 epochs | `checkpoints/vae_best.pth`, train loss 0.103 |
+| Bayesian optimisation | ✅ 20+ iters | Best objective −0.1058, 16.2% occupancy |
+| Integration test | ✅ Added | `tests/test_integration_decode_fem.py` |
+| SIMP data augmentation | ⏳ Pending | `topo_data_gen.py` exists, not yet run at scale |
+| Geometry conditioning | ⏳ Pending | Single shared latent space for all 4 geometry families |
+
+See `PROGRESS.md` for full dated log.
+
+---
+
 ## MANDATE: No Non-Physical Data
 All training data must originate from physics-based simulations (FreeCAD/CalculiX or SIMP). **Non-physical 'synthetic' data** (random noise, pure geometric heuristics) **is strictly forbidden.** The model must exclusively learn from physically plausible mechanics.
 
@@ -22,12 +38,12 @@ All training data must originate from physics-based simulations (FreeCAD/Calculi
 
 ## Architecture
 
-- [topology/simp_solver_gpu.py](file:///home/genpipeline/topology/simp_solver_gpu.py): PyTorch-based 3D SIMP.
-- [fem/](file:///home/genpipeline/fem/): Unified physics/FEM package.
-  - [data_pipeline.py](file:///home/genpipeline/fem/data_pipeline.py): Consolidates JSON/Parquet results.
-  - [voxel_fem.py](file:///home/genpipeline/fem/voxel_fem.py): Direct CalculiX voxel FEM solver.
-  - [data/](file:///home/genpipeline/fem/data/): Main training results.
-- [genpipeline/](file:///home/genpipeline/genpipeline/): Core pipeline logic package.
+- `genpipeline/topology/simp_solver_gpu.py` — PyTorch-based 3D SIMP.
+- `genpipeline/fem/` — Unified physics/FEM package.
+  - `data_pipeline.py` — Consolidates JSON/Parquet results.
+  - `voxel_fem.py` — Direct CalculiX voxel FEM solver.
+  - `data/` — Training voxel grids, FEM metrics, dataset `.pt` files.
+- `genpipeline/` — Core pipeline logic package.
   - [vae_design_model.py](file:///home/genpipeline/genpipeline/vae_design_model.py): 3D VAE with performance prediction.
   - [optimization_engine.py](file:///home/genpipeline/genpipeline/optimization_engine.py): Multi-objective parallel BO.
   - [schema.py](file:///home/genpipeline/genpipeline/schema.py): Type-safe Pydantic data models.
