@@ -1,0 +1,62 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# ── Virtual environment ───────────────────────────────────────────────────────
+venv/
+.venv/
+
+# ── Model checkpoints — large binaries, reproducible by retraining ────────────
+checkpoints/
+
+# ── Generated FEM data — reproducible by re-running freecad_bridge.py ─────────
+fem/data/
+fem/variants/
+fem/data_diversity/
+fem/data_precision/
+fem/test_run/
+fem/data_lbracket_test/
+
+# ── Topology solver outputs ───────────────────────────────────────────────────
+/tmp/bo_variants/
+/tmp/bo_validate/
+
+# ── Optimization results — large/binary, keep the JSON summaries only ─────────
+optimization_results/*
+!optimization_results/synthetic_run.json
+!optimization_results/real_run.json
+
+# ── Training logs ─────────────────────────────────────────────────────────────
+logs/
+
+# ── Simulation config (local machine-specific, may contain paths) ─────────────
+sim_config.json
+
+# ── Temp/scratch files ────────────────────────────────────────────────────────
+temp_*.py
+
+# ── Aider ─────────────────────────────────────────────────────────────────────
+.aider*
+
+# ── pytest cache ─────────────────────────────────────────────────────────────
+.pytest_cache/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+
+# Scratch scripts and run logs
+*.log
+pareto_discovery.png
+refine_design.py
+view_stresses.py
+visualize_pareto.py
+optimisation_results/
