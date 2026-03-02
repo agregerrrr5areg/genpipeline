@@ -13,6 +13,25 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _cuda_extensions_available() -> bool:
+    """Return True if the fused CUDA extensions (reparam, sparse conv) can be loaded."""
+    try:
+        from genpipeline import cuda_kernels
+        mu = torch.randn(1, 4, device="cuda")
+        logvar = torch.zeros(1, 4, device="cuda")
+        cuda_kernels.fused_reparameterize(mu, logvar)
+        return True
+    except Exception:
+        return False
+
+
+_CUDA_EXT_OK: bool = torch.cuda.is_available() and _cuda_extensions_available()
+_CUDA_EXT_SKIP = pytest.mark.skipif(
+    not _CUDA_EXT_OK,
+    reason="CUDA extensions unavailable (ninja + CUDA toolchain required)",
+)
+
+
 @pytest.fixture(scope="module")
 def vae():
     from genpipeline.vae_design_model import DesignVAE
@@ -26,6 +45,7 @@ class TestDesignVAEShapes:
         n = sum(p.numel() for p in vae.parameters())
         assert 30_000_000 < n < 60_000_000, f"Unexpected param count: {n}"
 
+    @_CUDA_EXT_SKIP
     def test_forward_output_shapes(self, vae):
         x = torch.randn(2, 1, 64, 64, 64, device="cuda")
         with autocast("cuda", dtype=torch.bfloat16):

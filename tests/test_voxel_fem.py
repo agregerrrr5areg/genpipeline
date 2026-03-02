@@ -12,6 +12,23 @@ from genpipeline.fem.voxel_fem import _wsl_to_win, VoxelHexMesher
 from genpipeline.pipeline_utils import FEM_SENTINEL
 
 
+def _simd_available() -> bool:
+    """Return True if the AVX-512 mesher SIMD extension can be loaded."""
+    try:
+        from genpipeline.cuda_kernels import get_solid_voxels_simd
+        get_solid_voxels_simd(np.ones((4, 4, 4), dtype=np.float32))
+        return True
+    except Exception:
+        return False
+
+
+_SIMD_OK = _simd_available()
+_SIMD_SKIP = pytest.mark.skipif(
+    not _SIMD_OK,
+    reason="SIMD mesher extension unavailable (ninja + C++ toolchain required)",
+)
+
+
 class TestWslToWin:
     def test_mnt_c_path(self):
         assert _wsl_to_win("/mnt/c/Windows/Temp/foo.inp") == "C:\\Windows\\Temp\\foo.inp"
@@ -26,6 +43,7 @@ class TestWslToWin:
         assert _wsl_to_win("/mnt/c") == "C:\\"
 
 
+@_SIMD_SKIP
 class TestVoxelHexMesher:
     def _solid_cube(self, n=4):
         """Return a fully solid n³ binary voxel grid."""
@@ -180,6 +198,7 @@ class TestParseFrd:
         assert result["stress_max"] == FEM_SENTINEL
 
 
+@_SIMD_SKIP
 class TestRunCcxFailureModes:
     def test_run_ccx_timeout_returns_sentinel(self, tmp_path):
         """When ccx times out, run_ccx should return sentinel with failure_reason=timeout."""
