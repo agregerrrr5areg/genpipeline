@@ -53,8 +53,11 @@ def _simd_available() -> bool:
     return True
 
 
-# Evaluated once at collection time — avoids repeated JIT compilation on every collect
-_CCX_AND_SIMD_OK: bool = _ccx_available() and _simd_available()
+# Evaluated once at collection time — avoids repeated JIT compilation on every collect.
+# SIMD check is kept separate: ccx absence skips the whole class; SIMD absence skips
+# individual tests inside the class with a more specific reason string.
+_CCX_OK: bool = _ccx_available()
+_SIMD_OK: bool = _simd_available()
 
 # ── TestDecodeAlwaysRuns ──────────────────────────────────────────────────────
 
@@ -91,13 +94,12 @@ class TestDecodeAlwaysRuns:
 
 # ── TestFEMWithCCX ────────────────────────────────────────────────────────────
 
-@pytest.mark.skipif(
-    not _CCX_AND_SIMD_OK,
-    reason="CalculiX (ccx) not found or SIMD extension unavailable",
-)
+@pytest.mark.skipif(not _CCX_OK, reason="CalculiX (ccx) not found on this system")
 class TestFEMWithCCX:
 
     def test_evaluate_returns_four_results(self, tmp_path):
+        if not _SIMD_OK:
+            pytest.skip("SIMD mesher extension unavailable (ninja + C++ toolchain required)")
         from genpipeline.fem.voxel_fem import VoxelFEMEvaluator
         vae = _load_vae()
         evaluator = VoxelFEMEvaluator(vae_model=vae, output_dir=str(tmp_path))
@@ -112,6 +114,8 @@ class TestFEMWithCCX:
             assert "mass" in r
 
     def test_at_least_one_non_sentinel(self, tmp_path):
+        if not _SIMD_OK:
+            pytest.skip("SIMD mesher extension unavailable (ninja + C++ toolchain required)")
         from genpipeline.fem.voxel_fem import VoxelFEMEvaluator
         from genpipeline.pipeline_utils import is_valid_fem_result
         vae = _load_vae()
