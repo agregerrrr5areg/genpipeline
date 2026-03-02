@@ -12,6 +12,8 @@ from genpipeline.fem.data_pipeline import DataPipeline
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# CMD CLI like claude code e.i interactive ui within terminal
+
 def main():
     parser = argparse.ArgumentParser(description="GenPipeline Quickstart CLI")
     parser.add_argument('--step', type=int, choices=[0, 1, 2, 3, 4, 5], help="Execute a specific step")
