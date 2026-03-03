@@ -175,6 +175,45 @@ pip install pytest pytest-cov black mypy
 - Use BF16 for memory efficiency
 - Monitor VRAM usage with NVML
 
+## 🐧 Why WSL2?
+
+This pipeline runs inside WSL2 (Windows Subsystem for Linux) with FreeCAD installed on the Windows host. Here's why that's the right trade-off:
+
+### WSL2 makes GPU/ML config significantly easier
+
+| Area | WSL2 | Native Windows |
+|------|------|----------------|
+| PyTorch install | One command (`--index-url cu128`) | Visual C++ deps, PATH conflicts |
+| CUDA multi-version | Side-by-side under `/usr/local/` | Registry conflicts |
+| Scientific packages | All Linux wheels available | Some lag or missing entirely |
+| FreeCAD integration | Subprocess bridge to Windows | Native |
+| GPU driver management | Inherited from Windows driver | Direct |
+| Long overnight runs | WSL2 VM can be killed by Windows | Stable |
+
+### How the FreeCAD/ccx split works
+
+```
+Windows side                    WSL2 side
+────────────────────            ────────────────────────────
+FreeCAD GUI / headless  ──→    .inp mesh file copied over
+                                ccx runs natively (if installed)
+                                .frd output parsed
+                         ←──   results back into Python pipeline
+```
+
+FreeCAD stays on Windows because it needs a Windows install. CalculiX (`ccx`) can run natively in WSL2:
+
+```bash
+sudo apt install calculix-ccx   # eliminates the Windows ccx.exe bridge entirely
+```
+
+Once ccx is native, the Bayesian optimisation loop (`VoxelFEMEvaluator`) needs no Windows access at all — it builds hex meshes from voxels directly and runs ccx locally.
+
+### When WSL2 is not enough
+
+- **Overnight training runs** — Windows can kill the WSL2 VM on sleep/hibernate. Use `powercfg /requestsoverride` or keep the machine awake.
+- **FreeCAD headless scripting** — still requires the Windows binary via subprocess. If you need full FreeCAD automation, dual-boot Linux is cleaner.
+
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
