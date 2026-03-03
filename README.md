@@ -87,6 +87,22 @@ python -c "from genpipeline.config import save_config; save_config({'voxel_resol
 - **Coverage reporting** - Test coverage analysis
 - **GPU-specific testing** - Blackwell compatibility testing
 
+## 📊 Current Status (2026-03-03)
+
+| Stage | Status | Notes |
+|-------|--------|-------|
+| FEM data generation | ✅ Complete | 10 variants, 1.4 s each via FreeCAD WSL2 bridge |
+| Dataset | ✅ Built | 32³ (2.8 MB) and 64³ (53 MB) `.pt` files |
+| VAE training | ✅ 300 epochs | `checkpoints/vae_best.pth`, train loss 0.103 |
+| Bayesian optimisation | ✅ 20+ iters | Best objective −0.1058, 16.2% occupancy |
+| Integration test | ✅ Added | `tests/test_integration_decode_fem.py` — 6/6 passed |
+| SIMP data augmentation | ⏳ Pending | `topo_data_gen.py` exists, not yet run at scale |
+| Geometry conditioning | ⏳ Pending | Single shared latent space for all 4 geometry families |
+
+See `PROGRESS.md` for full dated log.
+
+---
+
 ## 📁 Project Structure
 
 ```
