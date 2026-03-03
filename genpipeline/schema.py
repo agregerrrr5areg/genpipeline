@@ -75,6 +75,7 @@ class PipelineConfig(BaseModel):
     epochs: int = 500
     learning_rate: float = 0.0003
     beta_vae: float = 1.0
+    sharpness_weight: float = 0.5
     pos_weight: float = 30.0
     device: str = "cuda"
     n_optimisation_iterations: int = 1000

@@ -1,118 +1,144 @@
-
 #include <torch/extension.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 
 /**
- * Optimized SIMP Sensitivity Kernel
- * Uses Shared Memory Tiling and PTX inline assembly for Blackwell register efficiency.
- * 
- * Sensitivity dc_e = -p * x_e^(p-1) * u_e^T * Ke * u_e
+ * Fused SpMV Kernel for SIMP
+ * Computes y = K(x) * p directly without assembling K.
  */
 
-#define TILE_DIM 4
-#define ELEMENTS_PER_BLOCK (TILE_DIM * TILE_DIM * TILE_DIM)
+#define TILE_X 8
+#define TILE_Y 8
+#define TILE_Z 4
 
-__global__ void simp_sensitivity_ptx_kernel(
-    const float* __restrict__ xPhys,    // [nx * ny * nz]
-    const float* __restrict__ u,        // [n_dof]
-    const float* __restrict__ Ke,       // [24 * 24]
-    const long*  __restrict__ edof_mat, // [n_elem * 24]
-    float*       __restrict__ dc,       // [n_elem]
-    float penal,
-    int nx, int ny, int nz)
+__global__ void fused_spmv_kernel(
+    const double* __restrict__ xPhys,    // [n_elem]
+    const double* __restrict__ p,        // [n_dof]
+    const double* __restrict__ Ke,       // [24 * 24]
+    const long*   __restrict__ edof_mat, // [n_elem * 24]
+    double*       __restrict__ y,        // [n_dof]
+    double penal,
+    int nx, int ny, int nz,
+    int n_elem)
 {
-    // Shared memory for element stiffness matrix Ke (24x24)
-    __shared__ float s_Ke[24 * 24];
-    
-    // Cooperative load of Ke into shared memory
-    int tid = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.x * blockDim.y;
-    if (tid < 576) {
-        s_Ke[tid] = Ke[tid];
-    }
+    __shared__ double s_Ke[576];
+    int tid = threadIdx.x + threadIdx.y * TILE_X + threadIdx.z * TILE_X * TILE_Y;
+    if (tid < 576) s_Ke[tid] = Ke[tid];
     __syncthreads();
 
-    // Map thread to voxel
-    int ix = blockIdx.x * TILE_DIM + threadIdx.x;
-    int iy = blockIdx.y * TILE_DIM + threadIdx.y;
-    int iz = blockIdx.z * TILE_DIM + threadIdx.z;
+    int ix = blockIdx.x * TILE_X + threadIdx.x;
+    int iy = blockIdx.y * TILE_Y + threadIdx.y;
+    int iz = blockIdx.z * TILE_Z + threadIdx.z;
 
     if (ix >= nx || iy >= ny || iz >= nz) return;
 
     int elem_idx = ix * ny * nz + iy * nz + iz;
-    
-    // 1. Calculate x_e^(p-1) using PTX for fast math
-    float x_val = xPhys[elem_idx];
-    if (x_val < 1e-3f) x_val = 1e-3f;
-    
-    float p_minus_1 = penal - 1.0f;
-    float x_penal;
-    
-    // PTX: Use lg2 and ex2 for faster power calculation on Blackwell
-    asm("{
-	"
-        " .reg .f32 t;
-	"
-        " lg2.approx.f32 t, %1;
-	"
-        " mul.f32 t, t, %2;
-	"
-        " ex2.approx.f32 %0, t;
-	"
-        "}" : "=f"(x_penal) : "f"(x_val), "f"(p_minus_1));
+    double E_e = pow(fmax(xPhys[elem_idx], 1e-3), penal);
 
-    // 2. Load element displacements u_e (24 DOFs)
-    float u_e[24];
+    // Load element p values
+    double p_e[24];
     #pragma unroll
     for (int i = 0; i < 24; ++i) {
-        long dof_idx = edof_mat[elem_idx * 24 + i];
-        u_e[i] = u[dof_idx];
+        p_e[i] = p[edof_mat[elem_idx * 24 + i]];
     }
 
-    // 3. Compute ce = u_e^T * Ke * u_e
-    float ce = 0.0f;
+    // Local product Ke * p_e
     #pragma unroll
     for (int i = 0; i < 24; ++i) {
-        float tmp = 0.0f;
+        double val = 0.0;
         #pragma unroll
         for (int j = 0; j < 24; ++j) {
-            // Fused Multiply-Add
-            tmp += s_Ke[i * 24 + j] * u_e[j];
+            val += s_Ke[i * 24 + j] * p_e[j];
         }
-        ce += u_e[i] * tmp;
+        // Atomic add to global output vector y
+        atomicAdd(&y[edof_mat[elem_idx * 24 + i]], E_e * val);
     }
+}
 
-    // 4. Final sensitivity
+torch::Tensor fused_spmv_cuda(
+    torch::Tensor xPhys,
+    torch::Tensor p,
+    torch::Tensor Ke,
+    torch::Tensor edof_mat,
+    double penal,
+    int nx, int ny, int nz) 
+{
+    int n_dof = p.size(0);
+    auto y = torch::zeros_like(p);
+
+    dim3 threads(TILE_X, TILE_Y, TILE_Z);
+    dim3 blocks((nx + TILE_X - 1) / TILE_X, 
+                (ny + TILE_Y - 1) / TILE_Y, 
+                (nz + TILE_Z - 1) / TILE_Z);
+
+    fused_spmv_kernel<<<blocks, threads>>>(
+        xPhys.data_ptr<double>(),
+        p.data_ptr<double>(),
+        Ke.data_ptr<double>(),
+        edof_mat.data_ptr<long>(),
+        y.data_ptr<double>(),
+        penal, nx, ny, nz, nx*ny*nz
+    );
+
+    return y;
+}
+
+// ── Original Sensitivity Kernel (kept below) ──────────────────────────────────
+
+__global__ void simp_sensitivity_vec_kernel(
+    const double* __restrict__ xPhys, const double* __restrict__ u,
+    const double* __restrict__ Ke, const long* __restrict__ edof_mat,
+    double* __restrict__ dc, double penal, int nx, int ny, int nz, int n_dof)
+{
+    __shared__ double s_Ke[576];
+    int tid = threadIdx.x + threadIdx.y * TILE_X + threadIdx.z * TILE_X * TILE_Y;
+    if (tid < 576) s_Ke[tid] = Ke[tid];
+    if (tid + 256 < 576) s_Ke[tid + 256] = Ke[tid + 256];
+    if (tid + 512 < 576) s_Ke[tid + 512] = Ke[tid + 512];
+    __syncthreads();
+    int ix = blockIdx.x * TILE_X + threadIdx.x;
+    int iy = blockIdx.y * TILE_Y + threadIdx.y;
+    int iz = blockIdx.z * TILE_Z + threadIdx.z;
+    if (ix >= nx || iy >= ny || iz >= nz) return;
+    int elem_idx = ix * ny * nz + iy * nz + iz;
+    double x_val = xPhys[elem_idx];
+    if (x_val < 1e-3) x_val = 1e-3;
+    double x_penal = pow(x_val, penal - 1.0);
+    double u_e[24];
+    #pragma unroll
+    for (int i = 0; i < 24; ++i) {
+        long d_idx = edof_mat[elem_idx * 24 + i];
+        u_e[i] = (d_idx >= 0 && d_idx < n_dof) ? u[d_idx] : 0.0;
+    }
+    double ce = 0.0;
+    #pragma unroll
+    for (int i = 0; i < 24; ++i) {
+        double row_sum = 0.0;
+        #pragma unroll
+        for (int j = 0; j < 24; ++j) {
+            row_sum += s_Ke[i * 24 + j] * u_e[j];
+        }
+        ce += u_e[i] * row_sum;
+    }
     dc[elem_idx] = -penal * x_penal * ce;
 }
 
 torch::Tensor simp_sensitivity_cuda(
-    torch::Tensor xPhys,
-    torch::Tensor u,
-    torch::Tensor Ke,
-    torch::Tensor edof_mat,
-    float penal,
-    int nx, int ny, int nz) 
+    torch::Tensor xPhys, torch::Tensor u, torch::Tensor Ke, torch::Tensor edof_mat,
+    double penal, int nx, int ny, int nz) 
 {
-    auto dc = torch::zeros({nx * ny * nz}, xPhys.options());
-
-    dim3 threads(TILE_DIM, TILE_DIM, TILE_DIM);
-    dim3 blocks((nx + TILE_DIM - 1) / TILE_DIM, 
-                (ny + TILE_DIM - 1) / TILE_DIM, 
-                (nz + TILE_DIM - 1) / TILE_DIM);
-
-    simp_sensitivity_ptx_kernel<<<blocks, threads>>>(
-        xPhys.data_ptr<float>(),
-        u.data_ptr<float>(),
-        Ke.data_ptr<float>(),
-        edof_mat.data_ptr<long>(),
-        dc.data_ptr<float>(),
-        penal, nx, ny, nz
+    auto dc = torch::zeros_like(xPhys);
+    int n_dof = u.size(0);
+    dim3 threads(TILE_X, TILE_Y, TILE_Z);
+    dim3 blocks((nx + TILE_X - 1) / TILE_X, (ny + TILE_Y - 1) / TILE_Y, (nz + TILE_Z - 1) / TILE_Z);
+    simp_sensitivity_vec_kernel<<<blocks, threads>>>(
+        xPhys.data_ptr<double>(), u.data_ptr<double>(), Ke.data_ptr<double>(),
+        edof_mat.data_ptr<long>(), dc.data_ptr<double>(), penal, nx, ny, nz, n_dof
     );
-
     return dc;
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("simp_sensitivity", &simp_sensitivity_cuda, "Optimized SIMP sensitivity calculation (CUDA/PTX)");
+    m.def("simp_sensitivity", &simp_sensitivity_cuda, "Vectorized SIMP sensitivity calculation");
+    m.def("fused_spmv", &fused_spmv_cuda, "Fused Matrix-Free SpMV for SIMP");
 }

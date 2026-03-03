@@ -20,7 +20,8 @@ def train_vae(config: PipelineConfig, train_loader, val_loader):
         train_loader, 
         val_loader, 
         device=config.device, 
-        epochs=config.epochs
+        epochs=config.epochs,
+        sharpness_weight=getattr(config, 'sharpness_weight', 0.5)
     )
     
     trainer.fit(epochs=config.epochs)
