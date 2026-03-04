@@ -1,6 +1,6 @@
 {
-  "freecad_project_dir": "/mnt/c/Users/PC-PC/Documents/FreeCAD Designs",
-  "fem_data_output": "./fem/data",
+  "designs_dir": "/home/genpipeline/eval_results/samples",
+  "fem_data_output": "./fem_data",
   "voxel_resolution": 64,
   "use_sdf": false,
   "latent_dim": 32,
@@ -12,7 +12,7 @@
   "device": "cuda",
   "n_optimization_iterations": 1000,
   "output_dir": "./optimization_results",
-  "freecad_path": "/mnt/c/Users/PC-PC/AppData/Local/Programs/FreeCAD 1.0/bin/freecad.exe",
+  "freecad_path": null,
   "seed": 42,
   "n_init_points": 5,
   "checkpoint_dir": "./checkpoints",

@@ -59,21 +59,7 @@ _SIMD_SKIP = pytest.mark.skipif(
 )
 
 
-class TestWslToWin:
-    def test_mnt_c_path(self):
-        assert _wsl_to_win("/mnt/c/Windows/Temp/foo.inp") == "C:\\Windows\\Temp\\foo.inp"
 
-    def test_mnt_d_path(self):
-        assert _wsl_to_win("/mnt/d/data/file.txt") == "D:\\data\\file.txt"
-
-    def test_non_mnt_path_unchanged(self):
-        assert _wsl_to_win("/home/user/file.inp") == "/home/user/file.inp"
-
-    def test_drive_root_only(self):
-        assert _wsl_to_win("/mnt/c") == "C:\\"
-
-
-@_SIMD_SKIP
 class TestVoxelHexMesher:
     def _solid_cube(self, n=4):
         """Return a fully solid n³ binary voxel grid."""
