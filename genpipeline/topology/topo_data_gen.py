@@ -113,7 +113,7 @@ class TopoDataGenerator:
         log.info(
             f"Generating {n_samples} samples using {self.n_workers} GPU workers..."
         )
-        with concurrent.futures.ThreadPoolExecutor(
+        with concurrent.futures.ProcessPoolExecutor(
             max_workers=self.n_workers
         ) as executor:
             futures = [
@@ -142,7 +142,7 @@ class TopoDataGenerator:
                 f"Batch {batch_idx + 1}/{total_batches}: Generating {batch_count} samples..."
             )
 
-            with concurrent.futures.ThreadPoolExecutor(
+            with concurrent.futures.ProcessPoolExecutor(
                 max_workers=self.n_workers
             ) as executor:
                 futures = [
@@ -161,6 +161,10 @@ class TopoDataGenerator:
 
             generated += batch_count
             log.info(f"Progress: {generated}/{n_samples} samples generated")
+
+            log.error(f"Batch generation failed: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 if __name__ == "__main__":
