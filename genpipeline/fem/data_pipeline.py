@@ -21,6 +21,32 @@ logger = logging.getLogger(__name__)
 DesignSample = PydanticDesignSample
 
 
+class VoxelGrid:
+    """Convert STL meshes to binary voxel grids."""
+
+    def __init__(self, resolution: int = 64):
+        self.resolution = resolution
+
+    def mesh_to_voxel(self, stl_path: str) -> np.ndarray:
+        mesh = trimesh.load(stl_path)
+        voxels = mesh.voxelized(self.resolution)
+        return voxels.matrix.astype(np.float32)
+
+
+class FEMResultParser:
+    """Validate data provenance — ensure STL files have physical simulation context."""
+
+    def __init__(self, output_dir: str):
+        self.output_dir = Path(output_dir)
+
+    def validate_data_provenance(self, mesh_path: str) -> bool:
+        """Return True if a .step or .FCStd source file exists alongside the mesh."""
+        p = Path(mesh_path)
+        stem = p.stem
+        parent = p.parent
+        return (parent / f"{stem}.step").exists() or (parent / f"{stem}.FCStd").exists()
+
+
 class FEMDataset(Dataset):
     def __init__(self, samples, voxel_resolution=64, use_sdf=False):
         self.samples = samples

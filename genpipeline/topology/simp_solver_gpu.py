@@ -246,17 +246,28 @@ class SIMPSolverGPU:
             rz = rz_new
         return x
 
-    def _solve(self, xPhys, f, fixed_dofs):
-        return self._pcg_matrix_free(xPhys, f, fixed_dofs)
+    def _solve(self, K, f, fixed_dofs):
+        # Extract diagonal via COO format (CSR .diagonal() unsupported in PyTorch)
+        K_coo = K.to_sparse()
+        idx = K_coo.indices()
+        dmask = idx[0] == idx[1]
+        diag = torch.zeros(K.shape[0], device=K.device, dtype=K.dtype)
+        diag.scatter_add_(0, idx[0][dmask], K_coo.values()[dmask])
+        M_inv_diag = 1.0 / diag.clamp(min=1e-10)
+        f_bc = f.clone()
+        f_bc[fixed_dofs] = 0.0
+        return self._pcg(K, f_bc, M_inv_diag)
 
     def _calculate_compliance(self, xPhys: torch.Tensor, force_mag: float) -> float:
         f, fixed_dofs = self._get_bcs(force_mag)
-        u = self._solve(xPhys, f, fixed_dofs)
+        K = self._assemble_K(xPhys)
+        u = self._solve(K, f, fixed_dofs)
         return (f @ u).item()
 
     def _sensitivity(self, xPhys: torch.Tensor, force_mag: float) -> torch.Tensor:
         f, fixed_dofs = self._get_bcs(force_mag)
-        u = self._solve(xPhys, f, fixed_dofs)
+        K = self._assemble_K(xPhys)
+        u = self._solve(K, f, fixed_dofs)
 
         # Use new Vectorized CUDA Kernel
         from .. import cuda_kernels

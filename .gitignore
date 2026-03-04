@@ -60,3 +60,5 @@ refine_design.py
 view_stresses.py
 visualize_pareto.py
 optimisation_results/
+*.nsys-rep
+*.sqlite
