@@ -46,3 +46,10 @@ Update this file whenever a pipeline stage completes.
 - **Blackwell cuBLAS**: `cublasDgemmStridedBatched` broken for batch≥2 on CUDA 12.8. BoTorch GP models must stay on CPU via `blackwell_compat.py`.
 - **Data scarcity**: 237-450 samples is marginal for 37.7M parameters. SIMP augmentation (`genpipeline/topology/topo_data_gen.py`) exists but has not been used to augment the FreeCAD data yet.
 - **beta_vae mismatch**: Config has `beta_vae=1.0`; design doc recommends `0.05` for better reconstruction at 64³ with limited data. Ablation pending.
+
+### Windows FreeCAD Configuration
+- **Status**: Successfully configured Windows FreeCAD 1.0 access via WSL
+- **Path**: `/mnt/c/Users/PC-PC/AppData/Local/Programs/FreeCAD 1.0/bin/freecad.exe`
+- **FEM processing**: Pipeline can now process FreeCAD files (.FCStd) using Windows installation
+- **Files processed**: Gen1.FCStd, Gen1_with_fem.FCStd, test.FCStd
+- **Next step**: Process user's Generative Connection.FCStd file for topology optimization
