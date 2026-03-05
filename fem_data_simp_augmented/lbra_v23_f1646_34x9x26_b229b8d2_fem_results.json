@@ -1,0 +1,13 @@
+{
+  "stress_max": -710955.65,
+  "compliance": -7109556.5,
+  "mass": 0.05010062828660011,
+  "parameters": {
+    "geometry": "lbracket",
+    "volfrac": 0.23857443541244178,
+    "force_n": 1646.6140861619222,
+    "nx": 34,
+    "ny": 9,
+    "nz": 26
+  }
+}

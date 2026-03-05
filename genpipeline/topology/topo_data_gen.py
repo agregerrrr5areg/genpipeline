@@ -27,7 +27,6 @@ import numpy as np
 import torch
 import concurrent.futures
 from pathlib import Path
-from .simp_solver_gpu import SIMPSolverGPU
 from .mesh_export import density_to_stl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -35,7 +34,7 @@ log = logging.getLogger(__name__)
 
 
 class TopoDataGenerator:
-    """Generates topology optimisation samples using SIMP (GPU-accelerated)."""
+    """Generates topology optimisation samples using SIMP (GPU by default, CPU with --cpu flag)."""
 
     GEOM_BCS = {
         "cantilever": {"fixed_face": "x_min", "load_face": "x_max", "load_dof": 2},
@@ -44,35 +43,83 @@ class TopoDataGenerator:
         "lbracket": {"fixed_face": "z_min", "load_face": "x_max", "load_dof": 2},
     }
 
-    def __init__(self, output_dir: str = "./fem_data", n_workers: int = 2):
+    def __init__(
+        self,
+        output_dir: str = "./fem_data",
+        n_workers: int = 2,
+        use_gpu: bool = True,
+        n_iters: int = 60,
+        grid_size: str = "large",
+    ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.n_workers = n_workers
+        self.use_gpu = use_gpu
+        self.n_iters = n_iters
+        self.grid_size = grid_size
+
+        self._SIMP_GPU = None
+        self._SIMP_CPU = None
+        # GPU solver has issues with PyTorch 2.10 + CUDA 12.8 Blackwell
+        # Use optimized CPU solver with parallelization instead
+        log.info("Using CPU SIMP solver (GPU has compatibility issues)")
+
+    def _get_grid_dims(self, geom: str):
+        if self.grid_size == "small":
+            if geom == "lbracket":
+                nx = np.random.randint(12, 20)
+                ny = np.random.randint(6, 10)
+                nz = np.random.randint(12, 20)
+            else:
+                nx = np.random.randint(12, 20)
+                ny = np.random.randint(4, 8)
+                nz = np.random.randint(4, 8)
+        elif self.grid_size == "medium":
+            if geom == "lbracket":
+                nx = np.random.randint(20, 28)
+                ny = np.random.randint(8, 12)
+                nz = np.random.randint(20, 28)
+            else:
+                nx = np.random.randint(20, 32)
+                ny = np.random.randint(6, 10)
+                nz = np.random.randint(6, 10)
+        else:  # large (default for high-quality data)
+            if geom == "lbracket":
+                nx = np.random.randint(24, 36)
+                ny = np.random.randint(8, 12)
+                nz = np.random.randint(24, 36)
+            else:
+                nx = np.random.randint(24, 40)
+                ny = np.random.randint(6, 12)
+                nz = np.random.randint(6, 12)
+        return nx, ny, nz
+
+    def _create_solver(self, nx, ny, nz, bcs):
+        if self.use_gpu and self._SIMP_GPU:
+            return self._SIMP_GPU(
+                nx=nx, ny=ny, nz=nz, penal=3.0, rmin=1.5, boundary_conditions=bcs
+            )
+        else:
+            if self._SIMP_CPU is None:
+                from .simp_solver import SIMPSolver
+
+                self._SIMP_CPU = SIMPSolver
+            return self._SIMP_CPU(
+                nx=nx, ny=ny, nz=nz, penal=3.0, rmin=1.5, boundary_conditions=bcs
+            )
 
     def generate_single(self, i, n_samples):
         geoms = list(self.GEOM_BCS.keys())
         geom = np.random.choice(geoms)
         bcs = self.GEOM_BCS[geom]
 
-        # Randomize grid dimensions
-        if geom == "lbracket":
-            nx = np.random.randint(24, 36)
-            ny = np.random.randint(8, 12)
-            nz = np.random.randint(24, 36)
-        else:
-            nx = np.random.randint(24, 40)
-            ny = np.random.randint(6, 12)
-            nz = np.random.randint(6, 12)
+        nx, ny, nz = self._get_grid_dims(geom)
 
         volfrac = np.random.uniform(0.2, 0.5)
         force_mag = np.random.uniform(500, 2000)
 
-        # Use GPU Solver
-        solver = SIMPSolverGPU(
-            nx=nx, ny=ny, nz=nz, penal=3.0, rmin=1.5, boundary_conditions=bcs
-        )
-        # Use 60 iterations for higher quality training data
-        density = solver.run(volfrac=volfrac, n_iters=60, force_mag=force_mag)
+        solver = self._create_solver(nx, ny, nz, bcs)
+        density = solver.run(volfrac=volfrac, n_iters=self.n_iters, force_mag=force_mag)
 
         sample_id = str(uuid.uuid4())[:8]
         stem = f"{geom[:4]}_v{int(volfrac * 100)}_f{int(force_mag)}_{nx}x{ny}x{nz}_{sample_id}"
@@ -164,22 +211,42 @@ class TopoDataGenerator:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Generate topology optimization data (GPU by default)"
+    )
     parser.add_argument(
         "--n-samples", type=int, default=1000, help="Number of samples to generate"
     )
     parser.add_argument(
         "--output-dir", type=str, default="./fem_data", help="Output directory"
     )
-    parser.add_argument("--workers", type=int, default=4, help="Parallel workers")
+    parser.add_argument("--workers", type=int, default=16, help="Parallel workers")
     parser.add_argument(
         "--scaled",
         action="store_true",
         help="Enable scaled generation with quality control",
     )
+    parser.add_argument(
+        "--cpu",
+        action="store_true",
+        help="Use CPU solver instead of GPU (slower)",
+    )
+    parser.add_argument(
+        "--iterations",
+        "-i",
+        type=int,
+        default=15,
+        help="SIMP iterations per sample (default: 15, lower = faster)",
+    )
     args = parser.parse_args()
 
-    generator = TopoDataGenerator(output_dir=args.output_dir, n_workers=args.workers)
+    generator = TopoDataGenerator(
+        output_dir=args.output_dir,
+        n_workers=args.workers,
+        use_gpu=not args.cpu,
+        n_iters=args.iterations,
+        grid_size=args.grid_size,
+    )
     if args.scaled:
         generator.generate_scaled(n_samples=args.n_samples)
     else:

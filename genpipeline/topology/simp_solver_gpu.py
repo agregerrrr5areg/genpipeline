@@ -179,14 +179,13 @@ class SIMPSolverGPU:
 
     def _assemble_K(self, xPhys: torch.Tensor) -> torch.Tensor:
         n_dof = 3 * (self.nx + 1) * (self.ny + 1) * (self.nz + 1)
-        # Penalized stiffness values (only sK changes per iteration)
         E = torch.clamp(xPhys.flatten(), min=1e-3) ** self.penal
         sK = (self.Ke.flatten()[None, :] * E[:, None]).flatten()
-        # Use cached iK/jK for sparsity pattern
         K = torch.sparse_coo_tensor(
             torch.stack([self._iK, self._jK]), sK, (n_dof, n_dof)
         )
-        return K.coalesce().to_sparse_csr()
+        # Move to GPU BEFORE CSR conversion (PyTorch 2.10 bug otherwise)
+        return K.coalesce().to(self.device).to_sparse_csr()
 
     @staticmethod
     def _pcg(A_csr, b, M_inv_diag, tol=1e-6, max_iter=300, x0=None):
@@ -217,7 +216,9 @@ class SIMPSolverGPU:
             rz = rz_new
         return x
 
-    def _pcg_ssor(self, A_csr, b, tol=1e-6, max_iter=300, x0=None, omega=1.5, fixed_dofs=None):
+    def _pcg_ssor(
+        self, A_csr, b, tol=1e-6, max_iter=300, x0=None, omega=1.5, fixed_dofs=None
+    ):
         """PCG with SSOR preconditioner - ~5x fewer iterations than Jacobi.
 
         SSOR (Symmetric Successive Over-Relaxation) uses:
@@ -261,7 +262,9 @@ class SIMPSolverGPU:
             denom = torch.dot(p, Ap)
             if denom.abs() < 1e-30:
                 break
-            alpha = rz / denom.abs()  # abs() keeps step direction stable for near-SPD systems
+            alpha = (
+                rz / denom.abs()
+            )  # abs() keeps step direction stable for near-SPD systems
             x = x + alpha * p
             r = r - alpha * Ap
             if r.norm() < tol * b.norm():
@@ -367,8 +370,70 @@ class SIMPSolverGPU:
         return x
 
     def _solve(self, K, f, fixed_dofs, tol=1e-6, max_iter=2000, x0=None):
-        # Use scipy CG on CPU — PyTorch sparse PCG is unreliable for FEM systems.
-        # BC enforcement via elimination: zero rows/cols of fixed DOFs, diagonal=1.
+        """GPU-accelerated PCG solver with warm-start."""
+        n_dof = K.shape[0]
+
+        # GPU-based PCG for reasonable-sized problems (< 50k DOF)
+        # Use SSOR preconditioner for faster convergence
+        if n_dof < 50000 and self.device == "cuda":
+            K_coo = K.to_sparse_coo().coalesce()
+            indices = K_coo.indices()
+            values = K_coo.values()
+
+            # Build preconditioner (Jacobi: inverse diagonal)
+            diag_mask = indices[0] == indices[1]
+            diag = torch.zeros(n_dof, device=self.device, dtype=self.dtype)
+            diag.scatter_add_(0, indices[0][diag_mask], values[diag_mask].abs())
+            diag = diag.clamp(min=1e-6)
+            M_inv = 1.0 / diag
+
+            # Apply BC: zero out fixed DOFs
+            f_bc = f.clone()
+            f_bc[fixed_dofs] = 0.0
+
+            # Warm-start from previous solution if available
+            if x0 is not None:
+                x = x0.clone()
+            else:
+                x = torch.zeros(n_dof, device=self.device, dtype=self.dtype)
+
+            # PCG iteration
+            r = f_bc - torch.mv(K, x)
+            r[fixed_dofs] = 0.0
+
+            if r.norm() < tol * f_bc.norm():
+                return x
+
+            z = M_inv * r
+            p = z.clone()
+            rz = torch.dot(r, z)
+
+            for i in range(max_iter):
+                Ap = torch.mv(K, p)
+                Ap[fixed_dofs] = 0.0
+
+                denom = torch.dot(p, Ap)
+                if denom.abs() < 1e-30:
+                    break
+
+                alpha = rz / denom
+                x = x + alpha * p
+                r = r - alpha * Ap
+                r[fixed_dofs] = 0.0
+
+                if r.norm() < tol * f_bc.norm():
+                    break
+
+                z = M_inv * r
+                rz_new = torch.dot(r, z)
+                p = z + (rz_new / rz) * p
+                rz = rz_new
+
+            # Store for warm-start
+            self._u_prev = x.clone()
+            return x
+
+        # Fallback to scipy for large problems
         import scipy.sparse as sp
         import scipy.sparse.linalg as spla
 
@@ -380,10 +445,7 @@ class SIMPSolverGPU:
 
         K_sc = sp.coo_matrix((vals, (row, col)), shape=(n, n)).tocsr()
 
-        # Elimination BC: zero rows/cols of fixed DOFs, set diagonal to 1
         fd = fixed_dofs.cpu().numpy()
-        # Elimination BC via sparse projection: K_bc = D @ K @ D + I_fixed
-        # where D = diag(1 for free, 0 for fixed), I_fixed = diag(0 for free, 1 for fixed)
         free_mask = np.ones(n, dtype=np.float64)
         free_mask[fd] = 0.0
         D = sp.diags(free_mask)
@@ -396,7 +458,9 @@ class SIMPSolverGPU:
         x0_np = x0.cpu().numpy().astype(np.float64) if x0 is not None else None
         u_np, info = spla.cg(K_sc, f_np, x0=x0_np, rtol=tol, maxiter=max_iter)
 
-        return torch.from_numpy(u_np).to(dtype=self.dtype, device=self.device)
+        result = torch.from_numpy(u_np).to(dtype=self.dtype, device=self.device)
+        self._u_prev = result.clone()
+        return result
 
     def _calculate_compliance(self, xPhys: torch.Tensor, force_mag: float) -> float:
         f, fixed_dofs = self._get_bcs(force_mag)
@@ -522,9 +586,11 @@ class SIMPSolverGPU:
                                     cols.append(i2 * ny * nz + j2 * nz + k2)
                                     vals.append(rmin - dist)
         H = torch.sparse_coo_tensor(
-            torch.tensor([rows, cols]), torch.tensor(vals, dtype=dtype), (n, n)
+            torch.tensor([rows, cols], device=self.device),
+            torch.tensor(vals, dtype=dtype, device=self.device),
+            (n, n),
         )
-        H = H.to(self.device).to(dtype).to_sparse_csr()
+        H = H.to_sparse_csr()
         Hs = torch.sparse.mm(
             H, torch.ones((n, 1), device=self.device, dtype=dtype)
         ).flatten()

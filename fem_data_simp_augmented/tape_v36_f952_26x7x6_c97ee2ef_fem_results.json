@@ -1,0 +1,13 @@
+{
+  "stress_max": 67087.6375,
+  "compliance": 670876.375,
+  "mass": 0.01533775869756937,
+  "parameters": {
+    "geometry": "tapered",
+    "volfrac": 0.3651847230524198,
+    "force_n": 952.8958510648938,
+    "nx": 26,
+    "ny": 7,
+    "nz": 6
+  }
+}
