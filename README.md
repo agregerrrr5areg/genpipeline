@@ -10,6 +10,7 @@ A PyTorch-based generative design pipeline for topology optimization and structu
 - **Bayesian Optimization**: Completed 20+ optimization iterations with best objective of -0.1058, discovering designs with 16.2% occupancy
 - **FEM Integration**: Established robust FreeCAD 1.0 integration via WSL2 bridge for automated design generation
 - **GPU Optimization**: Implemented BF16 mixed precision training on RTX 5080 (Blackwell) with CUDA 12.8
+- **SIMP Solver**: Integrated high-performance GPU-native SIMP solver for accelerated topology optimization
 
 ### Key Learnings
 
@@ -17,11 +18,12 @@ A PyTorch-based generative design pipeline for topology optimization and structu
 2. **Beta-VAE Tuning**: Initial beta_vae=1.0 caused reconstruction issues at 64³ resolution; 0.05 recommended for better results
 3. **Blackwell Workarounds**: Batch matmul with batch_size≥2 requires CPU fallback for BoTorch GP models
 4. **WSL2 Bridge**: Windows FreeCAD + WSL2 ccx provides reliable FEM evaluation pipeline
+5. **GPU Acceleration**: GPU-native SIMP solver provides significant speedup over standard CPU implementations
 
 ### Optimizations Implemented
 
 - **Memory Efficiency**: BF16 mixed precision reduced VRAM usage by ~50%
-- **Performance**: Fused CUDA kernels for voxel operations
+- **Performance**: Fused CUDA kernels for voxel operations and high-speed GPU SIMP solver
 - **Pipeline Speed**: Automated FEM data generation at 1.4s/variant
 - **Code Quality**: Comprehensive test suite with 6/6 integration test pass rate
 
@@ -148,7 +150,7 @@ genpipeline/
 | VAE training | ✅ 300 epochs | `checkpoints/vae_best.pth`, train loss 0.103 |
 | Bayesian optimisation | ✅ 20+ iters | Best objective −0.1058, 16.2% occupancy |
 | Integration test | ✅ Added | `tests/test_integration_decode_fem.py` — 6/6 passed |
-| SIMP data augmentation | ⏳ Pending | `topo_data_gen.py` exists, not yet run at scale |
+| SIMP solver | ✅ GPU Native | Integrated high-performance topology optimization |
 | Geometry conditioning | ⏳ Pending | Single shared latent space for all 4 geometry families |
 
 See `PROGRESS.md` for full dated log.
