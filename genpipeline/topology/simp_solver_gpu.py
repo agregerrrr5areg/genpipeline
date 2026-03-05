@@ -181,11 +181,11 @@ class SIMPSolverGPU:
         n_dof = 3 * (self.nx + 1) * (self.ny + 1) * (self.nz + 1)
         E = torch.clamp(xPhys.flatten(), min=1e-3) ** self.penal
         sK = (self.Ke.flatten()[None, :] * E[:, None]).flatten()
+        # Create directly on device in COO format (CSR conversion is broken on Blackwell)
         K = torch.sparse_coo_tensor(
-            torch.stack([self._iK, self._jK]), sK, (n_dof, n_dof)
-        )
-        # Move to GPU BEFORE CSR conversion (PyTorch 2.10 bug otherwise)
-        return K.coalesce().to(self.device).to_sparse_csr()
+            self._iK, self._jK, sK, (n_dof, n_dof), device=self.device
+        ).coalesce()
+        return K
 
     @staticmethod
     def _pcg(A_csr, b, M_inv_diag, tol=1e-6, max_iter=300, x0=None):
@@ -374,16 +374,19 @@ class SIMPSolverGPU:
         n_dof = K.shape[0]
 
         # GPU-based PCG for reasonable-sized problems (< 50k DOF)
-        # Use SSOR preconditioner for faster convergence
-        if n_dof < 50000 and self.device == "cuda":
-            K_coo = K.to_sparse_coo().coalesce()
+        # Use COO format since CSR conversion is broken on Blackwell/PyTorch 2.10
+        if n_dof < 50000 and self.device == "cuda" and K.is_cuda:
+            K_coo = K.coalesce()
             indices = K_coo.indices()
             values = K_coo.values()
 
-            # Build preconditioner (Jacobi: inverse diagonal)
-            diag_mask = indices[0] == indices[1]
+            # Build Jacobi preconditioner (inverse diagonal)
             diag = torch.zeros(n_dof, device=self.device, dtype=self.dtype)
-            diag.scatter_add_(0, indices[0][diag_mask], values[diag_mask].abs())
+            for idx in range(indices.shape[1]):
+                row = indices[0, idx].item()
+                col = indices[1, idx].item()
+                if row == col:
+                    diag[row] = values[idx].abs()
             diag = diag.clamp(min=1e-6)
             M_inv = 1.0 / diag
 
@@ -397,8 +400,17 @@ class SIMPSolverGPU:
             else:
                 x = torch.zeros(n_dof, device=self.device, dtype=self.dtype)
 
-            # PCG iteration
-            r = f_bc - torch.mv(K, x)
+            # PCG iteration using COO sparse matrix-vector multiply
+            # y = K @ p using COO format
+            def sparse_mvCOO(A_indices, A_values, v):
+                result = torch.zeros(A_indices.shape[0], device=v.device, dtype=v.dtype)
+                for idx in range(A_indices.shape[1]):
+                    i = A_indices[0, idx]
+                    j = A_indices[1, idx]
+                    result[i] = result[i] + A_values[idx] * v[j]
+                return result
+
+            r = f_bc - sparse_mvCOO(indices, values, x)
             r[fixed_dofs] = 0.0
 
             if r.norm() < tol * f_bc.norm():
@@ -409,7 +421,7 @@ class SIMPSolverGPU:
             rz = torch.dot(r, z)
 
             for i in range(max_iter):
-                Ap = torch.mv(K, p)
+                Ap = sparse_mvCOO(indices, values, p)
                 Ap[fixed_dofs] = 0.0
 
                 denom = torch.dot(p, Ap)
@@ -589,8 +601,8 @@ class SIMPSolverGPU:
             torch.tensor([rows, cols], device=self.device),
             torch.tensor(vals, dtype=dtype, device=self.device),
             (n, n),
-        )
-        H = H.to_sparse_csr()
+        ).coalesce()
+        # Keep in COO format - CSR conversion is broken on Blackwell/PyTorch 2.10
         Hs = torch.sparse.mm(
             H, torch.ones((n, 1), device=self.device, dtype=dtype)
         ).flatten()
