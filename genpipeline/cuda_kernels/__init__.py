@@ -250,7 +250,7 @@ def fused_reparameterize(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor
     """
     if _CAN_COMPILE_CUDA:
         try:
-            ext = _get_ext("reparam_ext", "fused_reparameter_kernel.cu")
+            ext = _get_ext("reparam_ext", "fused_reparam_kernel.cu")
             return ext.fused_reparameterize(mu.contiguous(), logvar.contiguous())
         except Exception as e:
             print(f"[cuda_kernels] CUDA reparameterize failed: {e}, using fallback")

@@ -402,18 +402,22 @@ class SIMPSolverGPU:
         try:
             from ..cuda_kernels import simp_sensitivity as cuda_sensitivity
 
-            dc = cuda_sensitivity(
-                xPhys.contiguous(),
-                u.contiguous(),
-                self.Ke.contiguous(),
-                self._edof_mat.contiguous(),
-                float(self.penal),
-                int(self.nx),
-                int(self.ny),
-                int(self.nz),
+            dc = (
+                cuda_sensitivity(
+                    xPhys.double().contiguous(),
+                    u.double().contiguous(),
+                    self.Ke.double().contiguous(),
+                    self._edof_mat.contiguous(),
+                    float(self.penal),
+                    int(self.nx),
+                    int(self.ny),
+                    int(self.nz),
+                )
+                .to(self.dtype)
+                .flatten()
             )
             self._u_prev = u  # Store for warm-start next iteration
-            return dc.flatten()
+            return dc
         except Exception:
             # PyTorch fallback - vectorized computation
             # Used when: CUDA unavailable, compilation failed, or kernel error
