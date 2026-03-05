@@ -14,9 +14,12 @@ _CUDA_PATHS = [
     os.environ.get("CUDA_HOME", ""),
     "/usr/local/cuda-12.8",
     "/usr/local/cuda-12.7",
+    "/usr/local/cuda-12",
     "/usr/local/cuda-11.8",
 ]
 
+# Force CUDA 12.8 for Blackwell (sm_120) support
+# Must be done BEFORE importing torch.utils.cpp_extension
 _CUDA_HOME = None
 for p in _CUDA_PATHS:
     if p and Path(p).exists():
@@ -25,12 +28,17 @@ for p in _CUDA_PATHS:
             _CUDA_HOME = p
             break
 
+# Force CUDA_HOME in environment before any CUDA operations
 if _CUDA_HOME:
     os.environ["CUDA_HOME"] = _CUDA_HOME
     os.environ["PATH"] = f"{_CUDA_HOME}/bin:" + os.environ.get("PATH", "")
     os.environ["LD_LIBRARY_PATH"] = f"{_CUDA_HOME}/lib64:" + os.environ.get(
         "LD_LIBRARY_PATH", ""
     )
+    # Also set for PyTorch's cpp_extension
+    import torch.utils.cpp_extension as _cpp_ext
+
+    _cpp_ext.CUDA_HOME = _CUDA_HOME
 
 # Find conda GCC and set up library path for proper CXXABI
 _CONDA_PREFIX = os.path.dirname(os.path.dirname(sys.executable))
@@ -98,9 +106,13 @@ try:
 except Exception as e:
     print(f"[cuda_kernels] CUDA compile check: {e}")
 
+# Architecture flags for Blackwell (RTX 50 series) and backward compatibility
+# sm_120 = Blackwell, sm_90 = Hopper, sm_89 = Ada Lovelace, sm_80 = Ampere
 _ARCH_FLAGS = [
-    "-gencode=arch=compute_120,code=sm_120",
-    "-gencode=arch=compute_90,code=sm_90",
+    "-gencode=arch=compute_120,code=sm_120",  # Blackwell (requires CUDA 12.8+)
+    "-gencode=arch=compute_90,code=sm_90",  # Hopper
+    "-gencode=arch=compute_89,code=sm_89",  # Ada Lovelace
+    "-gencode=arch=compute_80,code=sm_80",  # Ampere
 ]
 _EXT_CACHE = {}
 

@@ -296,13 +296,57 @@ class VAETrainer:
         total_loss = 0.0
 
         for batch_idx, batch in enumerate(self.train_loader):
+            # Convert geometry to float and normalize [0,255] -> [0,1]
             geom = batch["geometry"].to(self.device, non_blocking=True)
-            perf = batch["performance"].to(self.device, non_blocking=True)
-            pars = batch["parameters"].to(self.device, non_blocking=True)
+            if geom.dtype == torch.uint8:
+                geom = geom.float() / 255.0
+            elif geom.dtype != torch.float32:
+                geom = geom.float()
+            # Ensure correct shape: (B, C, D, H, W)
+            if geom.dim() == 4:
+                geom = geom.unsqueeze(1)  # Add channel dim
+            elif geom.dim() == 5 and geom.shape[1] != 1:
+                geom = geom[:, :1]  # Take first channel if multi-channel
+            
+            # Extract performance metrics [stress, compliance, mass] from metrics dict
+            if "metrics" in batch:
+                metrics = batch["metrics"]
+                if isinstance(metrics, dict):
+                    # Stack [stress_max, compliance, mass] into (B, 3) tensor
+                    stress = metrics["stress_max"]
+                    compliance = metrics["compliance"]
+                    mass = metrics["mass"]
+                    if isinstance(compliance, torch.Tensor):
+                        perf = torch.stack([
+                            stress.to(self.device, non_blocking=True),
+                            compliance.to(self.device, non_blocking=True),
+                            mass.to(self.device, non_blocking=True)
+                        ], dim=1)
+                    else:
+                        perf = torch.tensor([
+                            [stress, compliance, mass]
+                        ], dtype=torch.float32, device=self.device)
+                else:
+                    perf = metrics.to(self.device, non_blocking=True)
+            else:
+                perf = batch["performance"].to(self.device, non_blocking=True)
+            
+            # Extract parameters (h_mm, r_mm) from parameters dict  
+            if "parameters" in batch and isinstance(batch["parameters"], dict):
+                params = batch["parameters"]
+                h_mm = params.get("h_mm", 10.0)
+                r_mm = params.get("r_mm", 2.0)
+                # Handle batched tensors
+                if isinstance(h_mm, torch.Tensor):
+                    pars = torch.stack([h_mm, r_mm], dim=1).to(self.device, non_blocking=True)
+                else:
+                    pars = torch.tensor([h_mm, r_mm], dtype=torch.float32, device=self.device)
+            else:
+                pars = batch["parameters"].to(self.device, non_blocking=True)
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            with autocast("cuda", dtype=torch.bfloat16):
+            with autocast("cuda", dtype=torch.float32):  # BF16 disabled due to Blackwell cuBLAS bug
                 out = self.model(geom)
                 x_rec, mu, logvar, p_pred, pr_pred = out
 
@@ -327,6 +371,10 @@ class VAETrainer:
                 mu_f = mu.float()
                 lv_f = logvar.float()
                 loss_kl = -0.5 * torch.mean(1 + lv_f - mu_f.pow(2) - lv_f.exp())
+                # p_pred expects 3 values: [stress, compliance, mass]
+                if perf.dim() == 1:
+                    # Single metric (compliance) - expand to 3
+                    perf = perf.unsqueeze(1).expand(-1, 3)
                 loss_perf = F.mse_loss(p_pred.float(), perf.float())
                 loss_pars = F.mse_loss(pr_pred.float(), pars.float())
 
@@ -372,7 +420,15 @@ class VAETrainer:
         with torch.no_grad():
             for batch in self.val_loader:
                 geom = batch["geometry"].to(self.device)
-                with autocast("cuda", dtype=torch.bfloat16):
+                if geom.dtype == torch.uint8:
+                    geom = geom.float() / 255.0
+                elif geom.dtype != torch.float32:
+                    geom = geom.float()
+                if geom.dim() == 4:
+                    geom = geom.unsqueeze(1)
+                elif geom.dim() == 5 and geom.shape[1] != 1:
+                    geom = geom[:, :1]
+                with autocast("cuda", dtype=torch.float32):  # BF16 disabled due to Blackwell cuBLAS bug
                     x_rec, _, _, _, _ = self.model(geom)
                     loss = F.binary_cross_entropy_with_logits(x_rec, geom)
                 total_loss += loss.item()
@@ -428,6 +484,6 @@ if __name__ == "__main__":
     params = sum(p.numel() for p in model.parameters())
     print(f"DesignVAE: {params / 1e6:.1f}M parameters — full GPU, BF16 autocast")
     x = torch.randn(2, 1, 64, 64, 64, device="cuda")
-    with autocast("cuda", dtype=torch.bfloat16):
+    with autocast("cuda", dtype=torch.float32):  # BF16 disabled due to Blackwell cuBLAS bug
         out = model(x)
     print(f"Forward OK: x_recon={out[0].shape}, mu={out[1].shape}")

@@ -44,7 +44,7 @@ class TopoDataGenerator:
         "lbracket": {"fixed_face": "z_min", "load_face": "x_max", "load_dof": 2},
     }
 
-    def __init__(self, output_dir: str = "./fem_data", n_workers: int = 4):
+    def __init__(self, output_dir: str = "./fem_data", n_workers: int = 2):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.n_workers = n_workers
@@ -113,7 +113,7 @@ class TopoDataGenerator:
         log.info(
             f"Generating {n_samples} samples using {self.n_workers} GPU workers..."
         )
-        with concurrent.futures.ProcessPoolExecutor(
+        with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.n_workers
         ) as executor:
             futures = [
@@ -142,7 +142,7 @@ class TopoDataGenerator:
                 f"Batch {batch_idx + 1}/{total_batches}: Generating {batch_count} samples..."
             )
 
-            with concurrent.futures.ProcessPoolExecutor(
+            with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.n_workers
             ) as executor:
                 futures = [
@@ -161,10 +161,6 @@ class TopoDataGenerator:
 
             generated += batch_count
             log.info(f"Progress: {generated}/{n_samples} samples generated")
-
-            log.error(f"Batch generation failed: {e}")
-            import traceback
-            traceback.print_exc()
 
 
 if __name__ == "__main__":
