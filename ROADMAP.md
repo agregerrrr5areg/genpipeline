@@ -2,7 +2,7 @@
 
 This document tracks the progress of low-level hardware optimizations and advanced system features for the Blackwell (RTX 50-series) architecture.
 
-## 🎯 Current Status (March 6, 2026)
+## TARGET Current Status (March 6, 2026)
 
 **SIMP Solver Performance:**
 - Original baseline: 101.2s for 60 iterations
@@ -13,7 +13,7 @@ This document tracks the progress of low-level hardware optimizations and advanc
 
 ---
 
-## ✅ Completed Optimizations
+## DONE Completed Optimizations
 
 ### Major Breakthroughs
 - [x] **Direct Sparse Solver**: Implemented scipy UMFPACK direct solver for grids <10K DOF, eliminating 2000-iteration PCG bottleneck (**4× speedup**, 101s → 23.5s for 60 iterations)
@@ -46,7 +46,7 @@ This document tracks the progress of low-level hardware optimizations and advanc
 
 ---
 
-## 🚧 In Progress / Next Steps
+##  In Progress / Next Steps
 
 ### High Priority
 - [ ] **Aggressive Kernel Benchmark**: Test actual speedup of PTX-optimized sensitivity kernel
@@ -65,7 +65,7 @@ This document tracks the progress of low-level hardware optimizations and advanc
 
 ---
 
-## 📊 Performance History
+##  Performance History
 
 | Phase | Date | Time (60 iters) | Speedup | Key Improvement |
 |-------|------|-----------------|---------|-----------------|
@@ -75,7 +75,7 @@ This document tracks the progress of low-level hardware optimizations and advanc
 
 ---
 
-## 📝 Notes
+##  Notes
 
 - **GPU**: NVIDIA RTX 5080 (Blackwell sm_120)
 - **CUDA**: 12.8

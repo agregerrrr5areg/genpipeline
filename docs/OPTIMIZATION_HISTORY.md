@@ -426,7 +426,7 @@ The distributed load fix (Phase 5.6) was critical:
 ## Remaining Opportunities
 
 ### High Impact (TODO)
-1. **~~Direct Solver for Small Grids~~** - ✅ COMPLETED - UMFPACK 4× speedup
+1. **~~Direct Solver for Small Grids~~** - DONE COMPLETED - UMFPACK 4× speedup
 2. **Multigrid Preconditioner** - 10-20× PCG speedup for large grids
 3. **Tensor Core SIMP** - tcgen05.mma for 24×24 operations
 4. **CUDA Graphs** - Capture full SIMP loop

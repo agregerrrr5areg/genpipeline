@@ -2,7 +2,7 @@
 
 A PyTorch-based generative design pipeline for topology optimization and structural design, featuring VAE-based design generation and Bayesian optimization for performance-driven design exploration.
 
-## 💡 Recent Improvements and Learnings
+##  Recent Improvements and Learnings
 
 ### What We've Accomplished
 
@@ -27,7 +27,7 @@ A PyTorch-based generative design pipeline for topology optimization and structu
 - **Pipeline Speed**: Automated FEM data generation at 1.4s/variant
 - **Code Quality**: Comprehensive test suite with 6/6 integration test pass rate
 
-## 🚀 Quickstart
+##  Quickstart
 
 ### Prerequisites
 - Python 3.13+
@@ -65,7 +65,7 @@ python eval_vae.py --model-checkpoint checkpoints/vae_best.pth
 python quickstart.py --all --config pipeline_config.json
 ```
 
-## 🛠️ Command Usage
+##  Command Usage
 
 ### Core Commands
 
@@ -94,7 +94,7 @@ python -c "from genpipeline.config import load_config; print(load_config())"
 python -c "from genpipeline.config import save_config; save_config({'voxel_resolution': 128})"
 ```
 
-## 🔧 Built With
+##  Built With
 
 ### Core Stack
 - **PyTorch** - Deep learning framework (CUDA 12.8 for Blackwell)
@@ -141,16 +141,16 @@ genpipeline/
 └── scripts/               # Helper scripts
 ```
 
-## 📊 Current Status (2026-03-03)
+##  Current Status (2026-03-03)
 
 | Stage | Status | Notes |
 |-------|--------|-------|
-| FEM data generation | ✅ Complete | 10 variants, 1.4 s each via FreeCAD WSL2 bridge |
-| Dataset | ✅ Built | 32³ (2.8 MB) and 64³ (53 MB) `.pt` files |
-| VAE training | ✅ 300 epochs | `checkpoints/vae_best.pth`, train loss 0.103 |
-| Bayesian optimisation | ✅ 20+ iters | Best objective −0.1058, 16.2% occupancy |
-| Integration test | ✅ Added | `tests/test_integration_decode_fem.py` — 6/6 passed |
-| SIMP solver | ✅ GPU Native | Integrated high-performance topology optimization |
+| FEM data generation | DONE Complete | 10 variants, 1.4 s each via FreeCAD WSL2 bridge |
+| Dataset | DONE Built | 32³ (2.8 MB) and 64³ (53 MB) `.pt` files |
+| VAE training | DONE 300 epochs | `checkpoints/vae_best.pth`, train loss 0.103 |
+| Bayesian optimisation | DONE 20+ iters | Best objective −0.1058, 16.2% occupancy |
+| Integration test | DONE Added | `tests/test_integration_decode_fem.py` — 6/6 passed |
+| SIMP solver | DONE GPU Native | Integrated high-performance topology optimization |
 | Geometry conditioning | ⏳ Pending | Single shared latent space for all 4 geometry families |
 
 See `PROGRESS.md` for full dated log.
@@ -174,7 +174,7 @@ genpipeline/
 └── docs/                  # Documentation
 ```
 
-## 🧪 Testing
+##  Testing
 
 ### Running Tests
 
@@ -202,7 +202,7 @@ pytest -v tests/
 - **GPU Tests** - Blackwell-specific compatibility
 - **Schema Validation** - Pydantic model testing
 
-## 🔧 Development
+##  Development
 
 ### Environment Setup
 
@@ -280,7 +280,7 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduc
 
 Our team follows a strict code of conduct to ensure a welcoming environment for all contributors. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for details.
 
-## 📝 Authors and Contributors
+##  Authors and Contributors
 
 - **Primary Maintainer**: [Your Name]
 - **Contributors**: [List of contributors]
@@ -295,7 +295,7 @@ Please report security vulnerabilities to [security@example.com](mailto:security
 - [BoTorch Documentation](https://botorch.org/)
 - [Pydantic Documentation](https://pydantic.dev/)
 
-## 🚀 Acknowledgments
+##  Acknowledgments
 
 - NVIDIA for Blackwell GPU support
 - PyTorch team for excellent deep learning framework
