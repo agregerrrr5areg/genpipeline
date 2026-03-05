@@ -13,23 +13,35 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
+import multiprocessing
 from pathlib import Path
 from typing import Dict, Optional
 
 import numpy as np
 
-from genpipeline.pipeline_utils import NumpyEncoder as _NumpyEncoder, smooth_voxels, FEM_SENTINEL, FEM_VALID_THRESHOLD, is_valid_fem_result
+from genpipeline.pipeline_utils import (
+    NumpyEncoder as _NumpyEncoder,
+    smooth_voxels,
+    FEM_SENTINEL,
+    FEM_VALID_THRESHOLD,
+    is_valid_fem_result,
+)
 
 logger = logging.getLogger(__name__)
 
+# Global semaphore to limit concurrent ccx processes system-wide
+# We limit to half of logical cores to balance with parallel GPU work
+_CCX_SEMAPHORE = threading.Semaphore(max(1, multiprocessing.cpu_count() // 2))
+
 # ── CalculiX executable discovery ─────────────────────────────────────────────
+
 
 def _discover_ccx_paths() -> list:
     """
     Build a prioritised list of CalculiX executable candidates:
       1. CCX_PATH env var (explicit override)
       2. Native Linux ccx on PATH
-      3. All Windows FreeCAD installs found via glob (any username)
     """
     candidates = []
 
@@ -39,15 +51,6 @@ def _discover_ccx_paths() -> list:
 
     if shutil.which("ccx"):
         candidates.append(shutil.which("ccx"))
-
-    # Glob covers any Windows username and any FreeCAD version
-    import glob
-    for pattern in [
-        "/mnt/c/Users/*/AppData/Local/Programs/FreeCAD*/bin/ccx.exe",
-        "/mnt/c/Program Files/FreeCAD*/bin/ccx.exe",
-        "/mnt/c/Program Files (x86)/FreeCAD*/bin/ccx.exe",
-    ]:
-        candidates.extend(glob.glob(pattern))
 
     return candidates
 
@@ -67,16 +70,12 @@ def find_ccx() -> Optional[str]:
 
 
 def _wsl_to_win(wsl_path: str) -> str:
-    """Convert /mnt/c/foo → C:\\foo for Windows executables."""
-    if wsl_path.startswith("/mnt/"):
-        parts = wsl_path[5:].split("/", 1)
-        drive = parts[0].upper()
-        rest = parts[1].replace("/", "\\") if len(parts) > 1 else ""
-        return f"{drive}:\\{rest}"
+    """Dummy function for WSL→Windows conversion (not needed with native ccx)."""
     return wsl_path
 
 
 # ── VoxelHexMesher ─────────────────────────────────────────────────────────────
+
 
 class VoxelHexMesher:
     """Converts a binary voxel grid to a CalculiX C3D8 hex mesh."""
@@ -121,7 +120,7 @@ class VoxelHexMesher:
 
         # Build node table: grid corner (cx, cy, cz) → global node ID (1-indexed)
         node_map: Dict[tuple, int] = {}
-        node_coords = []   # [(x_mm, y_mm, z_mm), ...]
+        node_coords = []  # [(x_mm, y_mm, z_mm), ...]
 
         def get_node(cx: int, cy: int, cz: int) -> int:
             key = (cx, cy, cz)
@@ -132,24 +131,21 @@ class VoxelHexMesher:
             return node_map[key]
 
         # Build C3D8 elements — one per solid voxel.
-        # CalculiX C3D8 node ordering (counter-clockwise bottom then top):
-        #   N1=(0,0,0) N2=(1,0,0) N3=(1,1,0) N4=(0,1,0)
-        #   N5=(0,0,1) N6=(1,0,1) N7=(1,1,1) N8=(0,1,1)
+        from ..cuda_kernels import get_solid_voxels_simd
+
+        solid_indices = get_solid_voxels_simd(voxels)
+
         elements = []
-        for ix in range(D):
-            for iy in range(H):
-                for iz in range(W):
-                    if not solid[ix, iy, iz]:
-                        continue
-                    n1 = get_node(ix,   iy,   iz)
-                    n2 = get_node(ix+1, iy,   iz)
-                    n3 = get_node(ix+1, iy+1, iz)
-                    n4 = get_node(ix,   iy+1, iz)
-                    n5 = get_node(ix,   iy,   iz+1)
-                    n6 = get_node(ix+1, iy,   iz+1)
-                    n7 = get_node(ix+1, iy+1, iz+1)
-                    n8 = get_node(ix,   iy+1, iz+1)
-                    elements.append([n1, n2, n3, n4, n5, n6, n7, n8])
+        for ix, iy, iz in solid_indices:
+            n1 = get_node(ix, iy, iz)
+            n2 = get_node(ix + 1, iy, iz)
+            n3 = get_node(ix + 1, iy + 1, iz)
+            n4 = get_node(ix, iy + 1, iz)
+            n5 = get_node(ix, iy, iz + 1)
+            n6 = get_node(ix + 1, iy, iz + 1)
+            n7 = get_node(ix + 1, iy + 1, iz + 1)
+            n8 = get_node(ix, iy + 1, iz + 1)
+            elements.append([n1, n2, n3, n4, n5, n6, n7, n8])
 
         if not elements:
             raise ValueError("No solid voxels found to mesh.")
@@ -158,16 +154,22 @@ class VoxelHexMesher:
         def face_nodes(face: str):
             nids = []
             for (cx, cy, cz), nid in node_map.items():
-                if   face == "x_min" and cx == 0: nids.append(nid)
-                elif face == "x_max" and cx == D: nids.append(nid)
-                elif face == "y_min" and cy == 0: nids.append(nid)
-                elif face == "y_max" and cy == H: nids.append(nid)
-                elif face == "z_min" and cz == 0: nids.append(nid)
-                elif face == "z_max" and cz == W: nids.append(nid)
+                if face == "x_min" and cx == 0:
+                    nids.append(nid)
+                elif face == "x_max" and cx == D:
+                    nids.append(nid)
+                elif face == "y_min" and cy == 0:
+                    nids.append(nid)
+                elif face == "y_max" and cy == H:
+                    nids.append(nid)
+                elif face == "z_min" and cz == 0:
+                    nids.append(nid)
+                elif face == "z_max" and cz == W:
+                    nids.append(nid)
             return nids
 
         fixed_nodes = face_nodes(fixed_face)
-        load_nodes  = face_nodes(load_face)
+        load_nodes = face_nodes(load_face)
 
         if not fixed_nodes:
             raise ValueError(f"No nodes on fixed face '{fixed_face}'.")
@@ -194,21 +196,21 @@ class VoxelHexMesher:
 
         # Node sets for BCs
         lines.append("*NSET, NSET=NFIX")
-        for chunk in [fixed_nodes[i:i+16] for i in range(0, len(fixed_nodes), 16)]:
+        for chunk in [fixed_nodes[i : i + 16] for i in range(0, len(fixed_nodes), 16)]:
             lines.append(",".join(str(n) for n in chunk))
 
         lines.append("*NSET, NSET=NLOAD")
-        for chunk in [load_nodes[i:i+16] for i in range(0, len(load_nodes), 16)]:
+        for chunk in [load_nodes[i : i + 16] for i in range(0, len(load_nodes), 16)]:
             lines.append(",".join(str(n) for n in chunk))
 
         lines.append("**")
         lines.append("*STEP")
         lines.append("*STATIC")
         lines.append("*BOUNDARY")
-        lines.append("NFIX,1,3,0.0")   # u=v=w=0
+        lines.append("NFIX,1,3,0.0")  # u=v=w=0
         lines.append("*CLOAD")
         for nid in load_nodes:
-            lines.append(f"{nid},3,{-force_per_node:.6f}")   # −Z direction
+            lines.append(f"{nid},3,{-force_per_node:.6f}")  # −Z direction
         lines.append("*NODE FILE")
         lines.append("U")
         lines.append("*EL FILE")
@@ -227,7 +229,9 @@ class VoxelHexMesher:
         return output_path
 
     @staticmethod
-    def run_ccx(inp_path: str, ccx_cmd: str = None, timeout: int = 300) -> Dict[str, float]:
+    def run_ccx(
+        inp_path: str, ccx_cmd: str = None, timeout: int = 300
+    ) -> Dict[str, float]:
         """
         Run CalculiX on an .inp file.
         Returns {"stress_max": ..., "displacement_max": ..., "compliance": ...}.
@@ -248,32 +252,47 @@ class VoxelHexMesher:
             inp_arg = str(work_dir / stem)
 
         cmd = [ccx_cmd, inp_arg]
-        logger.info(f"[VoxelFEM] Running: {' '.join(cmd)}")
-        try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True,
-                timeout=timeout, cwd=str(work_dir),
+
+        with _CCX_SEMAPHORE:
+            logger.info(
+                f"[VoxelFEM] Running (Active Slots: {multiprocessing.cpu_count() // 2}): {' '.join(cmd)}"
             )
-            if proc.returncode != 0:
-                logger.warning(f"[VoxelFEM] ccx returned non-zero exit code {proc.returncode}")
-                logger.debug(f"[VoxelFEM] stderr: {proc.stderr[:500]}")
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=str(work_dir),
+                )
+                if proc.returncode != 0:
+                    logger.warning(
+                        f"[VoxelFEM] ccx returned non-zero exit code {proc.returncode}"
+                    )
+                    logger.debug(f"[VoxelFEM] stderr: {proc.stderr[:500]}")
+                    return {
+                        "stress_max": FEM_SENTINEL,
+                        "displacement_max": FEM_SENTINEL,
+                        "compliance": FEM_SENTINEL,
+                        "failure_reason": "ccx_error",
+                    }
+            except subprocess.TimeoutExpired:
+                logger.error(f"[VoxelFEM] ccx timed out after {timeout}s")
                 return {
-                    "stress_max": FEM_SENTINEL, "displacement_max": FEM_SENTINEL,
-                    "compliance": FEM_SENTINEL, "failure_reason": "ccx_error",
+                    "stress_max": FEM_SENTINEL,
+                    "displacement_max": FEM_SENTINEL,
+                    "compliance": FEM_SENTINEL,
+                    "failure_reason": "timeout",
                 }
-        except subprocess.TimeoutExpired:
-            logger.error(f"[VoxelFEM] ccx timed out after {timeout}s")
-            return {
-                "stress_max": FEM_SENTINEL, "displacement_max": FEM_SENTINEL,
-                "compliance": FEM_SENTINEL, "failure_reason": "timeout",
-            }
 
         frd_path = work_dir / f"{stem}.frd"
         if not frd_path.exists():
             logger.error(f"[VoxelFEM] .frd not found: {frd_path}")
             return {
-                "stress_max": FEM_SENTINEL, "displacement_max": FEM_SENTINEL,
-                "compliance": FEM_SENTINEL, "failure_reason": "no_frd",
+                "stress_max": FEM_SENTINEL,
+                "displacement_max": FEM_SENTINEL,
+                "compliance": FEM_SENTINEL,
+                "failure_reason": "no_frd",
             }
 
         result = VoxelHexMesher._parse_frd(str(frd_path))
@@ -306,7 +325,7 @@ class VoxelHexMesher:
         def _read_val(line: str, slot: int) -> float:
             """Extract value from fixed-width slot (0-indexed after node ID)."""
             start = 13 + slot * 12
-            return float(line[start:start + 12])
+            return float(line[start : start + 12])
 
         try:
             with open(frd_path) as f:
@@ -342,30 +361,44 @@ class VoxelHexMesher:
                                 s12 = _read_val(line, 3)
                                 s23 = _read_val(line, 4)
                                 s13 = _read_val(line, 5)
-                                vm = (0.5 * ((s11-s22)**2 + (s22-s33)**2 + (s33-s11)**2
-                                             + 6*(s12**2 + s23**2 + s13**2))) ** 0.5
+                                vm = (
+                                    0.5
+                                    * (
+                                        (s11 - s22) ** 2
+                                        + (s22 - s33) ** 2
+                                        + (s33 - s11) ** 2
+                                        + 6 * (s12**2 + s23**2 + s13**2)
+                                    )
+                                ) ** 0.5
                                 stresses.append(vm)
                             except (ValueError, IndexError):
                                 pass
         except OSError as e:
             logger.error(f"[VoxelFEM] Could not read .frd: {e}")
             return {
-                "stress_max": FEM_SENTINEL, "displacement_max": FEM_SENTINEL,
-                "compliance": FEM_SENTINEL, "failure_reason": "no_frd",
+                "stress_max": FEM_SENTINEL,
+                "displacement_max": FEM_SENTINEL,
+                "compliance": FEM_SENTINEL,
+                "failure_reason": "no_frd",
             }
 
-        stress_max   = float(max(stresses))      if stresses      else 0.0
-        disp_max     = float(max(displacements)) if displacements else 0.0
-        compliance   = float(sum(displacements)) if displacements else 0.0
+        stress_max = float(max(stresses)) if stresses else 0.0
+        disp_max = float(max(displacements)) if displacements else 0.0
+        compliance = float(sum(displacements)) if displacements else 0.0
 
         logger.info(
             f"[VoxelFEM] stress_max={stress_max:.2f} MPa  "
             f"disp_max={disp_max:.4f} mm  compliance={compliance:.4f}"
         )
-        return {"stress_max": stress_max, "displacement_max": disp_max, "compliance": compliance}
+        return {
+            "stress_max": stress_max,
+            "displacement_max": disp_max,
+            "compliance": compliance,
+        }
 
 
 # ── VoxelFEMEvaluator ──────────────────────────────────────────────────────────
+
 
 class VoxelFEMEvaluator:
     """FEM evaluator using direct CalculiX hex mesh — bypasses FreeCAD."""
@@ -390,14 +423,16 @@ class VoxelFEMEvaluator:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.fixed_face = fixed_face
-        self.load_face  = load_face
-        self.force_n    = force_n
-        self.vae_model  = vae_model
+        self.load_face = load_face
+        self.force_n = force_n
+        self.vae_model = vae_model
         self.evaluation_history = []
-        self._counter   = 0
+        self._counter = 0
 
         if self.ccx_cmd is None:
-            logger.warning("[VoxelFEM] CalculiX not found — evaluations will return penalty values.")
+            logger.warning(
+                "[VoxelFEM] CalculiX not found — evaluations will return penalty values."
+            )
 
     def evaluate(self, z: np.ndarray, vae_model, bbox: dict = None) -> Dict[str, float]:
         """
@@ -415,6 +450,11 @@ class VoxelFEMEvaluator:
             z_t = torch.from_numpy(np.array(z).reshape(1, -1)).float().to(device)
             voxels = vae_model.decode(z_t).cpu().numpy().squeeze()
 
+        # Downsample 64^3 to 32^3 for speed
+        from scipy.ndimage import zoom
+
+        voxels = zoom(voxels, 0.5, order=1)
+
         # Organic density filter (matches DesignOptimizer.decode_latent_to_geometry)
         voxels = smooth_voxels(voxels)
 
@@ -423,7 +463,8 @@ class VoxelFEMEvaluator:
 
         try:
             VoxelHexMesher.voxels_to_inp(
-                voxels, bbox=bbox,
+                voxels,
+                bbox=bbox,
                 fixed_face=self.fixed_face,
                 load_face=self.load_face,
                 force_n=self.force_n,
@@ -431,31 +472,45 @@ class VoxelFEMEvaluator:
             )
         except ValueError as e:
             logger.warning(f"[VoxelFEM] Mesh failed: {e}")
-            return {"stress": FEM_SENTINEL, "compliance": FEM_SENTINEL, "mass": 1.0,
-                    "failure_reason": "mesh_error"}
+            return {
+                "stress": FEM_SENTINEL,
+                "compliance": FEM_SENTINEL,
+                "mass": 1.0,
+                "failure_reason": "mesh_error",
+            }
 
         if self.ccx_cmd is None:
-            return {"stress": FEM_SENTINEL, "compliance": FEM_SENTINEL, "mass": 1.0,
-                    "failure_reason": "no_ccx"}
+            return {
+                "stress": FEM_SENTINEL,
+                "compliance": FEM_SENTINEL,
+                "mass": 1.0,
+                "failure_reason": "no_ccx",
+            }
 
         fem_res = VoxelHexMesher.run_ccx(inp_path, ccx_cmd=self.ccx_cmd)
         # Propagate failure sentinel from run_ccx
         if not is_valid_fem_result({"stress": fem_res["stress_max"]}):
-            return {"stress": fem_res["stress_max"], "compliance": fem_res["compliance"],
-                    "mass": 1.0, "failure_reason": fem_res.get("failure_reason", "fem_failed")}
-        stress     = fem_res["stress_max"]
+            return {
+                "stress": fem_res["stress_max"],
+                "compliance": fem_res["compliance"],
+                "mass": 1.0,
+                "failure_reason": fem_res.get("failure_reason", "fem_failed"),
+            }
+        stress = fem_res["stress_max"]
         compliance = fem_res["compliance"]
 
         # Mass from volume fraction × total volume × steel density
         solid_frac = float((voxels > 0.5).mean())
         D, H, W = voxels.shape
         if bbox:
-            vol_mm3 = ((bbox["x"][1] - bbox["x"][0]) *
-                       (bbox["y"][1] - bbox["y"][0]) *
-                       (bbox["z"][1] - bbox["z"][0])) * solid_frac
+            vol_mm3 = (
+                (bbox["x"][1] - bbox["x"][0])
+                * (bbox["y"][1] - bbox["y"][0])
+                * (bbox["z"][1] - bbox["z"][0])
+            ) * solid_frac
         else:
             vol_mm3 = D * H * W * solid_frac
-        mass = vol_mm3 * 7900 / 1e9   # kg/mm³ × mm³ → kg
+        mass = vol_mm3 * 7900 / 1e9  # kg/mm³ × mm³ → kg
 
         result = {"stress": stress, "compliance": compliance, "mass": mass}
         return result
@@ -463,63 +518,95 @@ class VoxelFEMEvaluator:
     def evaluate_batch(self, param_list: list) -> list:
         """BridgeEvaluator-compatible interface. Reads 'latent_z' from each param."""
         if self.vae_model is None:
-            raise RuntimeError("VoxelFEMEvaluator.evaluate_batch requires vae_model set at construction")
-        results = []
+            raise RuntimeError(
+                "VoxelFEMEvaluator.evaluate_batch requires vae_model set at construction"
+            )
+
         from genpipeline.schema import FEMResult, OptimizationSample
-        for p in param_list:
+        import concurrent.futures
+
+        n_workers = getattr(self, "n_workers", 4)
+        results = [None] * len(param_list)
+
+        def eval_one(idx, p):
             z = getattr(p, "latent_z", None)
             if z is None:
-                results.append(FEMResult(stress_max=FEM_SENTINEL, compliance=FEM_SENTINEL, mass=1.0, success=False))
-                continue
+                return (
+                    idx,
+                    FEMResult(
+                        stress_max=FEM_SENTINEL,
+                        compliance=FEM_SENTINEL,
+                        mass=1.0,
+                        success=False,
+                    ),
+                    None,
+                )
+
             res_dict = self.evaluate(np.asarray(z), self.vae_model)
-            # Map 'stress' to 'stress_max' if needed
             eval_res = FEMResult(
                 stress_max=float(res_dict.get("stress", FEM_SENTINEL)),
                 compliance=float(res_dict.get("compliance", FEM_SENTINEL)),
                 mass=float(res_dict.get("mass", 1.0)),
-                success=res_dict.get("failure_reason") is None
+                success=res_dict.get("failure_reason") is None,
             )
-            results.append(eval_res)
-            self.evaluation_history.append(OptimizationSample(
-                parameters=p,
-                result=eval_res,
-                latent_z=z.tolist() if hasattr(z, "tolist") else list(z)
-            ))
+            return idx, eval_res, z
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as executor:
+            future_to_idx = {
+                executor.submit(eval_one, i, p): i for i, p in enumerate(param_list)
+            }
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx, eval_res, z = future.result()
+                results[idx] = eval_res
+                if z is not None:
+                    self.evaluation_history.append(
+                        OptimizationSample(
+                            parameters=param_list[idx],
+                            result=eval_res,
+                            latent_z=z.tolist() if hasattr(z, "tolist") else list(z),
+                        )
+                    )
+
         return results
 
     def save_history(self, path: str):
-        with open(path, 'w') as f:
+        with open(path, "w") as f:
             json.dump(self.evaluation_history, f, indent=2, cls=_NumpyEncoder)
 
 
 # ── CLI test mode ──────────────────────────────────────────────────────────────
 
+
 def _run_test():
     """Unit test: 10×10×10 solid cube, fixed x_min, loaded x_max (-Z force)."""
     import tempfile
+
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     print("=== VoxelHexMesher test: 10×10×10 solid cube ===")
     voxels = np.ones((10, 10, 10), dtype=np.float32)
-    bbox   = {"x": [0.0, 100.0], "y": [0.0, 20.0], "z": [0.0, 20.0]}
+    bbox = {"x": [0.0, 100.0], "y": [0.0, 20.0], "z": [0.0, 20.0]}
 
     with tempfile.TemporaryDirectory() as tmp:
         inp_path = os.path.join(tmp, "test_cube.inp")
         VoxelHexMesher.voxels_to_inp(
-            voxels, bbox=bbox,
-            fixed_face="x_min", load_face="x_max",
-            force_n=1000.0, output_path=inp_path,
+            voxels,
+            bbox=bbox,
+            fixed_face="x_min",
+            load_face="x_max",
+            force_n=1000.0,
+            output_path=inp_path,
         )
         size = os.path.getsize(inp_path)
         print(f"  .inp written: {inp_path}  ({size} bytes)")
 
         with open(inp_path) as f:
             content = f.read()
-        assert "*NODE" in content,    ".inp missing *NODE"
+        assert "*NODE" in content, ".inp missing *NODE"
         assert "*ELEMENT" in content, ".inp missing *ELEMENT"
-        assert "C3D8" in content,     ".inp missing C3D8 element type"
-        assert "*BOUNDARY" in content,".inp missing *BOUNDARY"
-        assert "*CLOAD" in content,   ".inp missing *CLOAD"
+        assert "C3D8" in content, ".inp missing C3D8 element type"
+        assert "*BOUNDARY" in content, ".inp missing *BOUNDARY"
+        assert "*CLOAD" in content, ".inp missing *CLOAD"
         print("  .inp content checks: PASS")
 
         ccx = find_ccx()
@@ -540,8 +627,11 @@ def _run_test():
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Voxel FEM — direct CalculiX path")
-    parser.add_argument("--test", action="store_true", help="Run unit test on 10×10×10 cube")
+    parser.add_argument(
+        "--test", action="store_true", help="Run unit test on 10×10×10 cube"
+    )
     args = parser.parse_args()
     if args.test:
         _run_test()

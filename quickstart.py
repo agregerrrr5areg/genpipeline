@@ -3,6 +3,7 @@ import argparse
 import logging
 import torch
 import numpy as np
+import os
 from pathlib import Path
 from genpipeline.config import load_config
 from genpipeline.trainer import train_vae
@@ -12,8 +13,6 @@ from genpipeline.fem.data_pipeline import DataPipeline
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# CMD CLI like claude code e.i interactive ui within terminal
-
 def main():
     parser = argparse.ArgumentParser(description="GenPipeline Quickstart CLI")
     parser.add_argument('--step', type=int, choices=[0, 1, 2, 3, 4, 5], help="Execute a specific step")
@@ -22,6 +21,8 @@ def main():
     parser.add_argument('--n-samples', type=int, help="Override n_samples for data generation")
     parser.add_argument('--n-iter', type=int, help="Override optimisation iterations")
     parser.add_argument('--epochs', type=int, help="Override VAE training epochs")
+    parser.add_argument('--topo-data', action='store_true', help="Generate topology data and rebuild dataset")
+    parser.add_argument('--topo-refine', action='store_true', help="Perform topology refinement in optimisation loop")
     
     args = parser.parse_args()
     config = load_config(args.config)
@@ -29,6 +30,25 @@ def main():
     # Overrides
     if args.n_iter: config.n_optimisation_iterations = args.n_iter
     if args.epochs: config.epochs = args.epochs
+
+    if args.topo_data:
+        logger.info("Generating topology optimisation samples...")
+        from genpipeline.topology.topo_data_gen import TopoDataGenerator
+        import subprocess
+        
+        n_samples = args.n_samples if args.n_samples else 100
+        generator = TopoDataGenerator(output_dir=config.fem_data_output)
+        generator.generate(n_samples=n_samples)
+        
+        logger.info("Rebuilding dataset.pt from new samples...")
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).parent.resolve())
+        import sys
+        subprocess.run([
+            sys.executable, "scripts/rebuild_dataset.py", 
+            "--fem-dir", config.fem_data_output,
+            "--resolution", str(config.voxel_resolution)
+        ], check=True, env=env)
 
     if args.step == 0:
         logger.info("Step 0: Legacy generation not yet moved to genpipeline package")
@@ -57,7 +77,7 @@ def main():
 
     if args.all or args.step == 4:
         logger.info("STEP 4: Design Optimisation Loop")
-        best_z, _ = run_optimisation(config)
+        best_z, _ = run_optimisation(config, topo_refine=args.topo_refine)
         if best_z is not None:
             Path(config.output_dir).mkdir(parents=True, exist_ok=True)
             np.save(Path(config.output_dir) / 'best_z.npy', best_z)

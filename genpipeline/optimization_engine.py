@@ -107,13 +107,16 @@ GEOM_SPACES = {
 
 
 class DesignOptimizer:
-    def __init__(self, vae_model, fem_evaluator, device='cuda', latent_dim=32, sim_cfg=None, topo_refine=False):
+    def __init__(self, vae_model, fem_evaluator, device='cuda', latent_dim=32, sim_cfg=None, topo_refine=False, n_workers=4):
         self.vae = vae_model
         self.fem_evaluator = fem_evaluator
         self.device = device
         self.latent_dim = latent_dim
         self.sim_cfg = sim_cfg or {"w_stress": 1.0, "w_compliance": 0.1, "w_mass": 0.01}
         self.topo_refine = topo_refine
+        self.n_workers = n_workers
+        if hasattr(fem_evaluator, 'n_workers'):
+            self.n_workers = fem_evaluator.n_workers
         self.vae.eval()
 
         # Load materials DB once
@@ -285,68 +288,86 @@ class DesignOptimizer:
         
         # ── Fix Task 5: Topology Refinement ─────────────────────────────────────
         if self.topo_refine:
-            logger.info(f"  Refining batch of {len(z_batch)} designs via SIMP (20 iters)...")
-            from topology.solver import TopologySolver
+            logger.info(f"  Refining batch of {len(z_batch)} designs via SIMP (5 iters, 32^3)...")
+            from genpipeline.topology.solver import TopologySolver
             geom_type = self.sim_cfg.get("geometry_type", "cantilever")
             
-            # Use 64^3 for refinement if possible, or match VAE
-            res = 64 
+            # Use 32^3 for refinement for speed (Training is 64, but 32 is enough for BO guidance)
+            res = 32 
             # Aspect ratio logic matches SIMP defaults
             ny_ref = res//4
             nz_ref = res//4
             if geom_type == "lbracket": nz_ref = res
-            
-            solver = TopologySolver(nx=res, ny=ny_ref, nz=nz_ref, n_iters=20)
             
             # Build mask once if static
             preserved_mask = None
             if self.sim_cfg.get("preserved_regions"):
                 preserved_mask = self._build_preserved_mask(self.sim_cfg["preserved_regions"], resolution=res)
             
-            refined_zs = []
-            for i, z in enumerate(z_batch):
-                # 1. Decode
-                z_t = torch.from_numpy(z).float().to(self.device).unsqueeze(0)
-                with torch.no_grad():
-                    voxels = self.vae.decode(z_t).squeeze().cpu().numpy()
-                
-                # 2. Refine (SIMP initialized from decoded density)
-                # Note: TopologySolver currently doesn't support warm-start from density easily
-                # but it uses SIMPSolver internally. We can run it and it's better than nothing.
-                # In a real warm-start, we'd pass 'voxels' to run().
-                sim_cfg_local = {
-                    "force_n": self.sim_cfg.get("force_n", 1000.0),
-                    "boundary_conditions": {
-                        "fixed_face": "x_min" if geom_type != "lbracket" else "z_min",
-                        "load_face": "x_max",
-                        "load_dof": 2
-                    },
-                    "preserved_mask": preserved_mask
-                }
-                # Temporary directory for refinement artifacts
-                refine_dir = Path("./optimisation_results/refine_tmp")
-                refine_dir.mkdir(parents=True, exist_ok=True)
-                
-                solver.run(sim_cfg_local, str(refine_dir), volfrac=0.4)
-                refined_density = solver.last_density # (nx, ny, nz)
-                
-                # 3. Re-encode
-                # Ensure shape matches VAE input (1, 1, 64, 64, 64)
-                # VAE expects 64^3 cube. We need to pad our (64, 16, 16) density.
-                padded = np.zeros((res, res, res), dtype=np.float32)
-                nx, ny, nz = refined_density.shape
-                # Center or align? Align to match training data generation
-                # Training data (fem_data_pipeline) usually fills the volume
-                # But here our SIMP grid is smaller. 
-                # Simplest is to place at origin 0,0,0
-                padded[:nx, :ny, :nz] = refined_density
-                
-                vox_t = torch.from_numpy(padded).float().to(self.device).view(1, 1, res, res, res)
-                with torch.no_grad():
-                    mu, _ = self.vae.encode(vox_t)
-                    refined_z = mu.cpu().numpy().squeeze()
-                refined_zs.append(refined_z)
+            refined_zs = [None] * len(z_batch)
             
+            def refine_single(idx, z_vec, stream):
+                from scipy.ndimage import zoom
+                # Use dedicated CUDA stream for this worker
+                with torch.cuda.stream(stream):
+                    # 1. Decode at higher resolution (VAE native 64^3)
+                    # Pinned memory for z_vec transfer
+                    z_t = torch.from_numpy(z_vec).float().pin_memory().to(self.device, non_blocking=True).unsqueeze(0)
+                    with torch.no_grad():
+                        voxels_64 = self.vae.decode(z_t).squeeze().cpu().numpy()
+                    
+                    # Downsample 64 -> 32 for SIMP speed
+                    voxels_32 = zoom(voxels_64, 0.5, order=1)
+                    
+                    # 2. Refine (SIMP initialized from decoded density)
+                    sim_cfg_local = {
+                        "force_n": self.sim_cfg.get("force_n", 1000.0),
+                        "boundary_conditions": {
+                            "fixed_face": "x_min" if geom_type != "lbracket" else "z_min",
+                            "load_face": "x_max",
+                            "load_dof": 2
+                        },
+                        "preserved_mask": preserved_mask
+                    }
+                    refine_dir = Path("./optimisation_results/refine_tmp")
+                    refine_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Extract initial guess for SIMP (matching its grid shape)
+                    nx_s, ny_s, nz_s = res, ny_ref, nz_ref
+                    x_init = voxels_32[:nx_s, :ny_s, :nz_s]
+                    
+                    # Run solver (SIMP-GPU) with Warm Start and only 5 iters
+                    solver_local = TopologySolver(nx=res, ny=ny_ref, nz=nz_ref, n_iters=5)
+                    # Ensure SIMPSolverGPU uses the worker's stream if we update its internal calls
+                    solver_local.run(sim_cfg_local, str(refine_dir), volfrac=0.4, export_stl=False, x_init=x_init)
+                    refined_density = solver_local.last_density
+                    
+                    # 3. Re-encode (Must be 64^3 for VAE)
+                    # Upsample 32 -> 64
+                    refined_64 = zoom(refined_density, 2.0, order=1)
+                    
+                    padded = np.zeros((64, 64, 64), dtype=np.float32)
+                    nx, ny, nz = refined_64.shape
+                    padded[:nx, :ny, :nz] = refined_64
+                    
+                    vox_t = torch.from_numpy(padded).float().pin_memory().to(self.device, non_blocking=True).view(1, 1, 64, 64, 64)
+                    with torch.no_grad():
+                        mu, _ = self.vae.encode(vox_t)
+                        return mu.cpu().numpy().squeeze()
+
+            import concurrent.futures
+            # Create a pool of CUDA streams, one per worker
+            streams = [torch.cuda.Stream(device=self.device) for _ in range(self.n_workers)]
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+                future_to_idx = {executor.submit(refine_single, i, z, streams[i % self.n_workers]): i 
+                                 for i, z in enumerate(z_batch)}
+                for future in concurrent.futures.as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    refined_zs[idx] = future.result()
+            
+            # Sync all streams before continuing
+            torch.cuda.synchronize(self.device)
             z_batch = np.array(refined_zs)
 
         param_list = []

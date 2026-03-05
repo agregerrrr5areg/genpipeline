@@ -167,8 +167,8 @@ All hyperparameters live in `pipeline_config.json`. Key values:
 
 | Key | Default | Effect |
 |-----|---------|--------|
-| `voxel_resolution` | 32 | 32³ = fast; 64³ = accurate but ~8× more VRAM |
-| `latent_dim` | 16 | Dimensionality of design space |
+| `voxel_resolution` | 64 | 32³ = fast; 64³ = accurate but ~8× more VRAM |
+| `latent_dim` | 32 | Dimensionality of design space |
 | `beta_vae` | 1.0 | KL weight — lower = more diverse samples |
 | `n_optimisation_iterations` | 50 | More = better optimum but slower |
 | `optimisation.acquisition_function` | `"UCB"` | Also supports `"EI"` |
@@ -183,3 +183,16 @@ checkpoints/            # vae_best.pth + epoch snapshots
 logs/                   # TensorBoard events
 optimisation_results/   # optimisation_history.json, exported STL/STEP
 ```
+
+## Keeping PROGRESS.md Current
+
+After completing any pipeline stage, append a dated entry to `PROGRESS.md`:
+
+```markdown
+## YYYY-MM-DD — <stage name>
+- **Status**: Complete / Partial / Failed
+- **Result**: <key metric or outcome>
+- **Notes**: <anything unexpected>
+```
+
+`PROGRESS.md` is the single source of truth for what has actually run. `README.md` summarises it; `PROGRESS.md` is the full record.

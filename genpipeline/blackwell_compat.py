@@ -23,4 +23,24 @@ Usage in optimisation_engine.py or any BoTorch code:
 import torch
 
 # Change to 'cuda' once upstream fix lands (track pytorch/pytorch #XXXXX)
+# Current workaround: BoTorch models on CPU for Blackwell
 botorch_device = torch.device("cpu")
+
+# Runtime check for Blackwell hardware
+BLACKWELL_CHECK = (
+    "Blackwell" in torch.cuda.get_device_name(0) if torch.cuda.is_available() else False
+)
+
+
+# Helper function to verify device compatibility
+def verify_botorch_device():
+    """Verify if BoTorch should use CPU or CUDA based on hardware."""
+    if not BLACKWELL_CHECK:
+        return torch.device("cuda")
+
+    # Blackwell: force CPU for BoTorch
+    return torch.device("cpu")
+
+
+# Update device at runtime
+botorch_device = verify_botorch_device()

@@ -1,0 +1,7 @@
+{
+  "pythonVersion": "3.13",
+  "pythonPath": ".venv/bin/python",
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "off"
+}

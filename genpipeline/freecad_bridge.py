@@ -65,7 +65,7 @@ def _discover_freecad_paths() -> list:
 # Kept for backwards-compatibility (tests etc. may reference it)
 FREECAD_SEARCH_PATHS = _discover_freecad_paths()
 
-EXTRACTOR_SCRIPT = Path(__file__).parent / "freecad_scripts" / "extract_fem.py"
+EXTRACTOR_SCRIPT = Path(__file__).parent.parent / "freecad_scripts" / "extract_fem.py"
 # Windows Temp is accessible from both Windows and WSL
 WIN_TEMP_WSL  = Path("/mnt/c/Windows/Temp")
 WIN_TEMP_WIN  = "C:\\Windows\\Temp"
@@ -256,7 +256,7 @@ def build_dataset(output_dir: Path, voxel_resolution: int = 64):
 
 # ── Variant generator ──────────────────────────────────────────────────────────
 
-VARIANT_SCRIPT = Path(__file__).parent / "freecad_scripts" / "run_fem_variant.py"
+VARIANT_SCRIPT = Path(__file__).parent.parent / "freecad_scripts" / "run_fem_variant.py"
 
 
 def deploy_variant_script() -> str:
@@ -286,7 +286,7 @@ def run_variant(freecad_cmd: str, h_mm: float, r_mm: float,
     stem = f"{geometry[:4]}_h{h_mm:.1f}_r{r_mm:.1f}_{uid}".replace(".", "p")
 
     # Prepare config payload
-    from sim_config import SIM_PHYSICS
+    from .sim_config import SIM_PHYSICS
     cfg_data = {
         "h_mm": h_mm,
         "r_mm": r_mm,

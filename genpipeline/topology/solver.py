@@ -40,15 +40,17 @@ class TopologySolver:
         else:
             self.backend = "simp"
 
-    def run(self, sim_cfg: dict, output_dir: str, volfrac: float = 0.4) -> str:
+    def run(self, sim_cfg: dict, output_dir: str, volfrac: float = 0.4, export_stl: bool = True, x_init: np.ndarray | None = None) -> str | None:
         """
-        Run topology optimisation, return path to output STL.
+        Run topology optimisation, return path to output STL (if exported).
 
         Parameters
         ----------
         sim_cfg    : dict with at least {"force_n": float}
         output_dir : directory to write STL
         volfrac    : target volume fraction (0–1)
+        export_stl : if False, skips mesh export and returns None
+        x_init     : optional initial density (nx, ny, nz) for warm-start
         """
         from .mesh_export import density_to_stl
 
@@ -56,13 +58,16 @@ class TopologySolver:
         if self.backend == "openlsto":
             density = self._run_openlsto(sim_cfg, volfrac)
         elif self.backend == "simp_gpu":
-            density = self._run_simp_gpu(sim_cfg, volfrac)
+            density = self._run_simp_gpu(sim_cfg, volfrac, x_init)
         else:
-            density = self._run_simp(sim_cfg, volfrac)
+            density = self._run_simp(sim_cfg, volfrac, x_init)
 
         self.last_density = density
         print(f"[TopologySolver] {self.backend} done in {time.time()-t0:.1f}s  "
               f"mean_density={density.mean():.3f}")
+
+        if not export_stl:
+            return None
 
         ts  = int(time.time())
         out = str(Path(output_dir) / f"topo_{self.backend}_{ts}_mesh.stl")
@@ -76,23 +81,25 @@ class TopologySolver:
         density_to_stl(density, out, voxel_size_mm=vsize)
         return out
 
-    def _run_simp(self, sim_cfg: dict, volfrac: float) -> np.ndarray:
+    def _run_simp(self, sim_cfg: dict, volfrac: float, x_init: np.ndarray | None = None) -> np.ndarray:
         from .simp_solver import SIMPSolver
         bcs = sim_cfg.get("boundary_conditions")
         mask = sim_cfg.get("preserved_mask")
         s = SIMPSolver(nx=self.nx, ny=self.ny, nz=self.nz, boundary_conditions=bcs, preserved_mask=mask)
         res = s.run(volfrac=volfrac, n_iters=self.n_iters,
                     force_mag=float(sim_cfg.get("force_n", 1000)))
+        # SIMPSolver (CPU) doesn't have x_init yet, let's just use it as is
         self.last_compliance = s.last_compliance
         return res
 
-    def _run_simp_gpu(self, sim_cfg: dict, volfrac: float) -> np.ndarray:
+    def _run_simp_gpu(self, sim_cfg: dict, volfrac: float, x_init: np.ndarray | None = None) -> np.ndarray:
         from .simp_solver_gpu import SIMPSolverGPU
         bcs = sim_cfg.get("boundary_conditions")
         mask = sim_cfg.get("preserved_mask")
         s = SIMPSolverGPU(nx=self.nx, ny=self.ny, nz=self.nz, boundary_conditions=bcs, preserved_mask=mask)
         res = s.run(volfrac=volfrac, n_iters=self.n_iters,
-                    force_mag=float(sim_cfg.get("force_n", 1000)))
+                    force_mag=float(sim_cfg.get("force_n", 1000)),
+                    x_init=x_init)
         self.last_compliance = s.last_compliance
         return res
 

@@ -75,6 +75,7 @@ class PipelineConfig(BaseModel):
     epochs: int = 500
     learning_rate: float = 0.0003
     beta_vae: float = 1.0
+    sharpness_weight: float = 0.5
     pos_weight: float = 30.0
     device: str = "cuda"
     n_optimisation_iterations: int = 1000
@@ -82,6 +83,7 @@ class PipelineConfig(BaseModel):
     checkpoint_dir: str = "./checkpoints"
     log_dir: str = "./logs"
     seed: int = 42
+    freecad_path: Optional[str] = "/mnt/c/Users/PC-PC/AppData/Local/Programs/FreeCAD 1.0"
     
     optimisation: OptimisationConfig = Field(default_factory=OptimisationConfig)
     performance_weights: PerformanceWeights = Field(default_factory=PerformanceWeights)

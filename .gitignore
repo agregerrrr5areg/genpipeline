@@ -59,3 +59,6 @@ pareto_discovery.png
 refine_design.py
 view_stresses.py
 visualize_pareto.py
+optimisation_results/
+*.nsys-rep
+*.sqlite

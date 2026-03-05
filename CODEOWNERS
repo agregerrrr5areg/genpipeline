@@ -1,0 +1,65 @@
+# Code Owners
+
+This file defines the code ownership and review responsibilities for the Generative Design Pipeline repository.
+
+## Maintainers
+
+- **Primary Maintainer**: [@primary-maintainer](https://github.com/primary-maintainer)
+- **Secondary Maintainers**: [@secondary-maintainer1](https://github.com/secondary-maintainer1), [@secondary-maintainer2](https://github.com/secondary-maintainer2)
+
+## Areas of Responsibility
+
+### Core Pipeline
+- **Files**: `genpipeline/*`, `quickstart.py`
+- **Reviewers**: Primary Maintainer, Secondary Maintainers
+- **Review Required**: All changes
+
+### VAE Components
+- **Files**: `genpipeline/vae_design_model.py`, `tests/test_vae_model.py`
+- **Reviewers**: Primary Maintainer
+- **Review Required**: All changes
+
+### Optimization Engine
+- **Files**: `genpipeline/optimization_engine.py`, `tests/test_optimization_engine.py`
+- **Reviewers**: Secondary Maintainer 1
+- **Review Required**: All changes
+
+### FEM and Physics
+- **Files**: `genpipeline/fem/*`, `tests/test_voxel_fem.py`
+- **Reviewers**: Secondary Maintainer 2
+- **Review Required**: All changes
+
+### Schema and Configuration
+- **Files**: `genpipeline/schema.py`, `genpipeline/config.py`, `pipeline_config.json`
+- **Reviewers**: Primary Maintainer
+- **Review Required**: All changes
+
+### Testing Suite
+- **Files**: `tests/*`
+- **Reviewers**: All maintainers
+- **Review Required**: All changes
+
+### Documentation
+- **Files**: `README.md`, `docs/*`
+- **Reviewers**: All maintainers
+- **Review Required**: All changes
+
+## Review Process
+
+1. **Pull Request Creation**: All changes must be submitted via pull request
+2. **Code Review**: At least one code owner must review and approve
+3. **Testing**: All tests must pass (including GPU tests if applicable)
+4. **Documentation**: Update documentation if required
+5. **Merge**: Maintainer with write access merges after approval
+
+## Emergency Contact
+
+For urgent issues or security concerns, contact the primary maintainer directly at [primary-maintainer@example.com](mailto:primary-maintainer@example.com).
+
+## Contributing Guidelines
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines and code of conduct.
+
+---
+
+*This file is automatically enforced by GitHub's CODEOWNERS feature.*
