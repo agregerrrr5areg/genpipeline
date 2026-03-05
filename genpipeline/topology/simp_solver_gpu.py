@@ -90,11 +90,11 @@ class SIMPSolverGPU:
         for i in range(n_iters):
             # Adaptive tolerance: loose early, tight later
             if i < 20:
-                tol, max_iter = 1e-4, 200
+                tol, max_iter = 1e-4, 1000
             elif i < 40:
-                tol, max_iter = 1e-5, 300
+                tol, max_iter = 1e-5, 1500
             else:
-                tol, max_iter = 1e-6, 300
+                tol, max_iter = 1e-6, 2000
 
             dc = self._sensitivity(xPhys, force_mag, tol=tol, max_iter=max_iter)
             if torch.isnan(dc).any():
@@ -143,7 +143,7 @@ class SIMPSolverGPU:
         )
 
         # Load Face
-        f = torch.zeros(n_dof, device=self.device, dtype=torch.float64)
+        f = torch.zeros(n_dof, device=self.device, dtype=self.dtype)
         lf = self.bcs.get("load_face", "x_max")
         ld = self.bcs.get("load_dof", 2)
         mask_l = (
@@ -163,15 +163,17 @@ class SIMPSolverGPU:
         )
         load_nodes = (ix * (ny + 1) * (nz + 1) + iy * (nz + 1) + iz)[mask_l]
 
-        # Safety: avoid applying load to a fixed node
+        # Distribute load evenly across all non-fixed nodes on the load face.
+        # A single-node point load concentrates strain energy at one node,
+        # leaving ~98% of elements with near-zero sensitivity and making
+        # the volume constraint unsatisfiable in OC.
         if len(load_nodes) > 0:
             is_fixed = torch.isin(load_nodes, fixed_nodes)
             valid_nodes = load_nodes[~is_fixed]
-            if len(valid_nodes) > 0:
-                node = valid_nodes[len(valid_nodes) // 2]
-            else:
-                node = load_nodes[len(load_nodes) // 2]
-            f[3 * node + ld] = -float(force_mag)
+            if len(valid_nodes) == 0:
+                valid_nodes = load_nodes
+            force_per_node = float(force_mag) / len(valid_nodes)
+            f[3 * valid_nodes + ld] = -force_per_node
 
         return f, fixed_dofs
 
@@ -215,7 +217,7 @@ class SIMPSolverGPU:
             rz = rz_new
         return x
 
-    def _pcg_ssor(self, A_csr, b, tol=1e-6, max_iter=300, x0=None, omega=1.5):
+    def _pcg_ssor(self, A_csr, b, tol=1e-6, max_iter=300, x0=None, omega=1.5, fixed_dofs=None):
         """PCG with SSOR preconditioner - ~5x fewer iterations than Jacobi.
 
         SSOR (Symmetric Successive Over-Relaxation) uses:
@@ -236,15 +238,9 @@ class SIMPSolverGPU:
         diag.scatter_add_(0, indices[0][diag_mask], values[diag_mask])
         diag = diag.clamp(min=1e-10)
 
-        # SSOR preconditioner application: z = M^-1 * r
-        # For SSOR: M = (D/omega + L) * D^-1 * (D/omega + U)
+        # Jacobi preconditioner: z = D^-1 * r
         def apply_ssor(r):
-            # Forward sweep: (D/omega + L) * y = r
-            y = r.clone()
-            # Simplified: use diagonal scaling with over-relaxation
-            # Full SSOR requires triangular solves which are expensive in PyTorch sparse
-            # We use a practical approximation: z = (2-omega)/omega * D^-1 * r
-            return ((2.0 - omega) / omega) * r / diag
+            return r / diag
 
         # PCG with SSOR
         if x0 is not None:
@@ -263,9 +259,9 @@ class SIMPSolverGPU:
         for _ in range(max_iter):
             Ap = torch.mv(A_csr, p)
             denom = torch.dot(p, Ap)
-            if denom < 1e-25:
+            if denom.abs() < 1e-30:
                 break
-            alpha = rz / denom
+            alpha = rz / denom.abs()  # abs() keeps step direction stable for near-SPD systems
             x = x + alpha * p
             r = r - alpha * Ap
             if r.norm() < tol * b.norm():
@@ -370,14 +366,37 @@ class SIMPSolverGPU:
 
         return x
 
-    def _solve(self, K, f, fixed_dofs, tol=1e-6, max_iter=300, x0=None):
-        n_dof = K.shape[0]
-        f_bc = f.clone()
-        f_bc[fixed_dofs] = 0.0
+    def _solve(self, K, f, fixed_dofs, tol=1e-6, max_iter=2000, x0=None):
+        # Use scipy CG on CPU — PyTorch sparse PCG is unreliable for FEM systems.
+        # BC enforcement via elimination: zero rows/cols of fixed DOFs, diagonal=1.
+        import scipy.sparse as sp
+        import scipy.sparse.linalg as spla
 
-        # Use PCG with SSOR preconditioner for all sizes
-        # (Direct solver disabled - stiffness matrix can be singular during SIMP)
-        return self._pcg_ssor(K, f_bc, tol=tol, max_iter=max_iter, x0=x0)
+        K_coo = K.to_sparse_coo().coalesce().cpu()
+        row = K_coo.indices()[0].numpy()
+        col = K_coo.indices()[1].numpy()
+        vals = K_coo.values().numpy().astype(np.float64)
+        n = K.shape[0]
+
+        K_sc = sp.coo_matrix((vals, (row, col)), shape=(n, n)).tocsr()
+
+        # Elimination BC: zero rows/cols of fixed DOFs, set diagonal to 1
+        fd = fixed_dofs.cpu().numpy()
+        # Elimination BC via sparse projection: K_bc = D @ K @ D + I_fixed
+        # where D = diag(1 for free, 0 for fixed), I_fixed = diag(0 for free, 1 for fixed)
+        free_mask = np.ones(n, dtype=np.float64)
+        free_mask[fd] = 0.0
+        D = sp.diags(free_mask)
+        I_fixed = sp.diags(1.0 - free_mask)
+        K_sc = D @ K_sc @ D + I_fixed
+
+        f_np = f.cpu().numpy().astype(np.float64)
+        f_np[fd] = 0.0
+
+        x0_np = x0.cpu().numpy().astype(np.float64) if x0 is not None else None
+        u_np, info = spla.cg(K_sc, f_np, x0=x0_np, rtol=tol, maxiter=max_iter)
+
+        return torch.from_numpy(u_np).to(dtype=self.dtype, device=self.device)
 
     def _calculate_compliance(self, xPhys: torch.Tensor, force_mag: float) -> float:
         f, fixed_dofs = self._get_bcs(force_mag)
@@ -439,7 +458,7 @@ class SIMPSolverGPU:
         return torch.sparse.mm(self._H.t(), (dc / self._Hs).view(-1, 1)).flatten()
 
     def _oc_update(self, x, xPhys, dc, volfrac):
-        move, l1, l2 = 0.2, 0.0, 1e12
+        move, l1, l2 = 0.2, 0.0, float((-dc).max().clamp(min=1.0) * 2)
         for _ in range(60):
             lmid = 0.5 * (l2 + l1)
             xnew = torch.clamp(
@@ -503,7 +522,7 @@ class SIMPSolverGPU:
                                     cols.append(i2 * ny * nz + j2 * nz + k2)
                                     vals.append(rmin - dist)
         H = torch.sparse_coo_tensor(
-            torch.tensor([rows, cols]), torch.tensor(vals, dtype=torch.float64), (n, n)
+            torch.tensor([rows, cols]), torch.tensor(vals, dtype=dtype), (n, n)
         )
         H = H.to(self.device).to(dtype).to_sparse_csr()
         Hs = torch.sparse.mm(
