@@ -375,10 +375,75 @@ class SIMPSolverGPU:
         return x
 
     def _solve(self, K, f, fixed_dofs, tol=1e-6, max_iter=2000, x0=None):
-        """GPU-accelerated solver using dense Cholesky for small problems."""
+        """GPU-accelerated PCG solver using COO sparse format.
+        
+        Uses torch.sparse.mm which works reliably on Blackwell/PyTorch 2.10.
+        """
         n_dof = K.shape[0]
 
-        # Use scipy CG on CPU — reliable for FEM systems
+        # Use GPU-based PCG if on CUDA
+        if self.device == "cuda" and K.is_cuda:
+            # Convert to COO format for reliable SpMV
+            K_coo = K.to_sparse_coo().coalesce()
+            indices = K_coo.indices()
+            values = K_coo.values()
+            
+            # Build Jacobi preconditioner (inverse diagonal)
+            diag = torch.zeros(n_dof, device=self.device, dtype=self.dtype)
+            idx0 = indices[0]
+            idx1 = indices[1]
+            for i in range(indices.shape[1]):
+                if idx0[i] == idx1[i]:
+                    diag[idx0[i]] = values[i].abs()
+            diag = diag.clamp(min=1e-6)
+            M_inv = 1.0 / diag
+            
+            # Apply BC: zero out fixed DOFs
+            f_bc = f.clone()
+            f_bc[fixed_dofs] = 0.0
+            
+            # Warm-start from previous solution if available
+            if x0 is not None:
+                x = x0.clone()
+            else:
+                x = torch.zeros(n_dof, device=self.device, dtype=self.dtype)
+            
+            # PCG iteration using COO sparse matrix-vector multiply
+            r = f_bc - torch.sparse.mm(K_coo, x.unsqueeze(1)).squeeze()
+            r[fixed_dofs] = 0.0
+            
+            if r.norm() < tol * f_bc.norm():
+                return x
+                
+            z = M_inv * r
+            p = z.clone()
+            rz = torch.dot(r, z)
+            
+            for i in range(max_iter):
+                Ap = torch.sparse.mm(K_coo, p.unsqueeze(1)).squeeze()
+                Ap[fixed_dofs] = 0.0
+                
+                denom = torch.dot(p, Ap)
+                if denom.abs() < 1e-30:
+                    break
+                    
+                alpha = rz / denom
+                x = x + alpha * p
+                r = r - alpha * Ap
+                r[fixed_dofs] = 0.0
+                
+                if r.norm() < tol * f_bc.norm():
+                    break
+                    
+                z = M_inv * r
+                rz_new = torch.dot(r, z)
+                p = z + (rz_new / rz) * p
+                rz = rz_new
+            
+            self._u_prev = x.clone()
+            return x
+        
+        # Fallback to scipy CPU for other cases
         import scipy.sparse as sp
         import scipy.sparse.linalg as spla
 
