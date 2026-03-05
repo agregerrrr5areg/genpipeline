@@ -60,9 +60,9 @@ class TopoDataGenerator:
 
         self._SIMP_GPU = None
         self._SIMP_CPU = None
-        # GPU solver has issues with PyTorch 2.10 + CUDA 12.8 Blackwell
-        # Use optimized CPU solver with parallelization instead
-        log.info("Using CPU SIMP solver (GPU has compatibility issues)")
+        # CPU solver is more reliable for parallel generation
+        # GPU solver has threading issues with PyTorch 2.10 + CUDA 12.8
+        log.info("Using CPU SIMP solver")
 
     def _get_grid_dims(self, geom: str):
         if self.grid_size == "small":

@@ -64,9 +64,9 @@ class SIMPSolverGPU:
         # Warm-start for PCG: store previous solution
         self._u_prev = None
 
-        # Cache COO sparsity pattern for _assemble_K
-        self._iK = self._edof_mat.repeat_interleave(24)
-        self._jK = self._edof_mat.repeat(1, 24).flatten()
+        # Cache COO sparsity pattern for _assemble_K (move to device)
+        self._iK = self._edof_mat.repeat_interleave(24).to(self.device)
+        self._jK = self._edof_mat.repeat(1, 24).flatten().to(self.device)
 
     def run(
         self,
@@ -181,11 +181,16 @@ class SIMPSolverGPU:
         n_dof = 3 * (self.nx + 1) * (self.ny + 1) * (self.nz + 1)
         E = torch.clamp(xPhys.flatten(), min=1e-3) ** self.penal
         sK = (self.Ke.flatten()[None, :] * E[:, None]).flatten()
-        # Create directly on device in COO format (CSR conversion is broken on Blackwell)
-        K = torch.sparse_coo_tensor(
-            self._iK, self._jK, sK, (n_dof, n_dof), device=self.device
+
+        # Create directly on device in COO format, then convert to CSR
+        # Key fix: create indices directly on GPU to avoid device mismatch
+        indices = torch.stack([self._iK.to(self.device), self._jK.to(self.device)])
+        K_coo = torch.sparse_coo_tensor(
+            indices, sK.to(self.device), size=(n_dof, n_dof), device=self.device
         ).coalesce()
-        return K
+
+        # Convert to CSR - this works when tensor is already on GPU
+        return K_coo.to_sparse_csr()
 
     @staticmethod
     def _pcg(A_csr, b, M_inv_diag, tol=1e-6, max_iter=300, x0=None):
@@ -370,82 +375,10 @@ class SIMPSolverGPU:
         return x
 
     def _solve(self, K, f, fixed_dofs, tol=1e-6, max_iter=2000, x0=None):
-        """GPU-accelerated PCG solver with warm-start."""
+        """GPU-accelerated solver using dense Cholesky for small problems."""
         n_dof = K.shape[0]
 
-        # GPU-based PCG for reasonable-sized problems (< 50k DOF)
-        # Use COO format since CSR conversion is broken on Blackwell/PyTorch 2.10
-        if n_dof < 50000 and self.device == "cuda" and K.is_cuda:
-            K_coo = K.coalesce()
-            indices = K_coo.indices()
-            values = K_coo.values()
-
-            # Build Jacobi preconditioner (inverse diagonal)
-            diag = torch.zeros(n_dof, device=self.device, dtype=self.dtype)
-            for idx in range(indices.shape[1]):
-                row = indices[0, idx].item()
-                col = indices[1, idx].item()
-                if row == col:
-                    diag[row] = values[idx].abs()
-            diag = diag.clamp(min=1e-6)
-            M_inv = 1.0 / diag
-
-            # Apply BC: zero out fixed DOFs
-            f_bc = f.clone()
-            f_bc[fixed_dofs] = 0.0
-
-            # Warm-start from previous solution if available
-            if x0 is not None:
-                x = x0.clone()
-            else:
-                x = torch.zeros(n_dof, device=self.device, dtype=self.dtype)
-
-            # PCG iteration using COO sparse matrix-vector multiply
-            # y = K @ p using COO format
-            def sparse_mvCOO(A_indices, A_values, v):
-                result = torch.zeros(A_indices.shape[0], device=v.device, dtype=v.dtype)
-                for idx in range(A_indices.shape[1]):
-                    i = A_indices[0, idx]
-                    j = A_indices[1, idx]
-                    result[i] = result[i] + A_values[idx] * v[j]
-                return result
-
-            r = f_bc - sparse_mvCOO(indices, values, x)
-            r[fixed_dofs] = 0.0
-
-            if r.norm() < tol * f_bc.norm():
-                return x
-
-            z = M_inv * r
-            p = z.clone()
-            rz = torch.dot(r, z)
-
-            for i in range(max_iter):
-                Ap = sparse_mvCOO(indices, values, p)
-                Ap[fixed_dofs] = 0.0
-
-                denom = torch.dot(p, Ap)
-                if denom.abs() < 1e-30:
-                    break
-
-                alpha = rz / denom
-                x = x + alpha * p
-                r = r - alpha * Ap
-                r[fixed_dofs] = 0.0
-
-                if r.norm() < tol * f_bc.norm():
-                    break
-
-                z = M_inv * r
-                rz_new = torch.dot(r, z)
-                p = z + (rz_new / rz) * p
-                rz = rz_new
-
-            # Store for warm-start
-            self._u_prev = x.clone()
-            return x
-
-        # Fallback to scipy for large problems
+        # Use scipy CG on CPU — reliable for FEM systems
         import scipy.sparse as sp
         import scipy.sparse.linalg as spla
 
@@ -492,41 +425,19 @@ class SIMPSolverGPU:
         K = self._assemble_K(xPhys)
         u = self._solve(K, f, fixed_dofs, tol=tol, max_iter=max_iter, x0=self._u_prev)
 
-        # Try optimized CUDA kernel first (Blackwell-optimized sm_120)
-        # Falls back to PyTorch if CUDA compilation unavailable
-        try:
-            from ..cuda_kernels import simp_sensitivity as cuda_sensitivity
-
-            dc = (
-                cuda_sensitivity(
-                    xPhys.double().contiguous(),
-                    u.double().contiguous(),
-                    self.Ke.double().contiguous(),
-                    self._edof_mat.contiguous(),
-                    float(self.penal),
-                    int(self.nx),
-                    int(self.ny),
-                    int(self.nz),
-                )
-                .to(self.dtype)
-                .flatten()
-            )
-            self._u_prev = u  # Store for warm-start next iteration
-            return dc
-        except Exception:
-            # PyTorch fallback - vectorized computation
-            # Used when: CUDA unavailable, compilation failed, or kernel error
-            u_e = u[self._edof_mat]  # (n_elem, 24)
-            # Ensure Ke matches u_e dtype for matmul
-            Ke = self.Ke.to(u_e.dtype)
-            ce = torch.sum((u_e @ Ke) * u_e, dim=1)
-            dc = (
-                -self.penal
-                * torch.clamp(xPhys.flatten(), min=1e-3) ** (self.penal - 1)
-                * ce
-            )
-            self._u_prev = u  # Store for warm-start next iteration
-            return dc  # Return flattened, _filter_dc expects 1D tensor
+        # Use PyTorch fallback - CUDA kernel compilation causes issues on Blackwell
+        # CUDA kernel compilation causes hangs on PyTorch 2.10 + CUDA 12.8
+        u_e = u[self._edof_mat]  # (n_elem, 24)
+        # Ensure Ke matches u_e dtype for matmul
+        Ke = self.Ke.to(u_e.dtype)
+        ce = torch.sum((u_e @ Ke) * u_e, dim=1)
+        dc = (
+            -self.penal
+            * torch.clamp(xPhys.flatten(), min=1e-3) ** (self.penal - 1)
+            * ce
+        )
+        self._u_prev = u  # Store for warm-start next iteration
+        return dc  # Return flattened, _filter_dc expects 1D tensor
 
     def _filter_dc(self, dc: torch.Tensor) -> torch.Tensor:
         # Ensure dc matches _H dtype for sparse matrix multiplication

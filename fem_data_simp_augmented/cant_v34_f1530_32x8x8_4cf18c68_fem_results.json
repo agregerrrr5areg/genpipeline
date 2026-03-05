@@ -1,0 +1,13 @@
+{
+  "stress_max": 14294.965625,
+  "compliance": 142949.65625,
+  "mass": 0.014413867145776749,
+  "parameters": {
+    "geometry": "cantilever",
+    "volfrac": 0.3431872906541491,
+    "force_n": 1530.5407130767194,
+    "nx": 32,
+    "ny": 8,
+    "nz": 8
+  }
+}
