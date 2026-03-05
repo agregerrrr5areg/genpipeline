@@ -271,6 +271,91 @@ Developed in parallel to Claude's integration test work to avoid conflicts.
 
 ---
 
+## Phase 7: Direct Sparse Solver Revolution (Mar 6, 2026)
+
+**The Breakthrough:** After profiling revealed PCG was taking 2000 iterations (~1573ms), we implemented a sparse direct solver using scipy's UMFPACK.
+
+### The Problem
+PCG with Jacobi preconditioner was the bottleneck:
+- **1573 ms per iteration** (98% of SIMP time)
+- **2000 PCG iterations** per SIMP iteration
+- Poor convergence due to ill-conditioned system
+
+### The Solution: scipy.sparse.spsolve
+```python
+def _solve_direct(self, K, f, fixed_dofs):
+    """Sparse direct solver using UMFPACK (scipy)."""
+    import scipy.sparse as sp
+    import scipy.sparse.linalg as spla
+    
+    # Move to CPU for scipy
+    K_coo = K.to_sparse_coo().coalesce().cpu()
+    f_cpu = f.cpu()
+    fixed_cpu = fixed_dofs.cpu()
+    
+    # Build scipy CSC matrix
+    row = K_coo.indices()[0].numpy()
+    col = K_coo.indices()[1].numpy()
+    vals = K_coo.values().numpy()
+    K_sc = sp.coo_matrix((vals, (row, col)), shape=(n, n)).tocsc()
+    
+    # Apply boundary conditions
+    K_sc[fd, :] = 0.0
+    K_sc[:, fd] = 0.0
+    for i in fd:
+        K_sc[i, i] = 1.0
+    
+    # Solve using UMFPACK sparse direct solver
+    x_np = spla.spsolve(K_sc, f_np)
+    
+    # Move result back to GPU
+    return torch.from_numpy(x_np).to(device=K.device)
+```
+
+### Why It Works
+1. **No iterations needed** - Direct factorization
+2. **UMFPACK is highly optimized** - Unsymmetric MultiFrontal method
+3. **Small grids (<10K DOF)** - Perfect for SIMP topology optimization
+4. **Minimal transfer overhead** - Only 7ms GPU→CPU, 0.3ms CPU→GPU
+
+### Additional Optimizations
+1. **OC Update Tuning** - Reduced max iterations 60→30
+   ```python
+   for _ in range(30):  # Was 60
+       # ... bisection loop
+       if (l2 - l1) / (l1 + l2 + 1e-15) < 1e-5:
+           break
+   ```
+
+2. **Automatic Solver Selection**
+   ```python
+   if n_dof < 10000:
+       return self._solve_direct(K, f, fixed_dofs)  # UMFPACK
+   else:
+       return self._pcg_with_preconditioner(...)   # Iterative
+   ```
+
+### Performance Results
+| Grid | DOFs | Solver | Time | Speedup |
+|------|------|--------|------|---------|
+| 16×8×8 | 4,131 | Direct | 12.5s | **5.6×** |
+| **32×8×8** | **8,019** | **Direct** | **23.5s** | **4.2×** |
+| 48×12×12 | 24,843 | PCG | 87.8s | 1.0× |
+
+### Profiling Breakdown (32×8×8, 24s total)
+| Component | Time | % |
+|-----------|------|---|
+| **Solve (direct)** | **360 ms** | **90%** |
+| OC Update | 24 ms | 6% |
+| Get BCs | 7 ms | 2% |
+| Assemble K | 3 ms | 1% |
+| Sensitivity | 4 ms | 1% |
+| Filter | 2 ms | 0.5% |
+
+**Key Insight:** Direct solver is 4× faster than 2000-iteration PCG!
+
+---
+
 ## Performance Evolution Summary
 
 ### SIMP Sensitivity Kernel
@@ -289,8 +374,16 @@ Developed in parallel to Claude's integration test work to avoid conflicts.
 |-------|------|---------|-------|
 | 0 | 90-120s | 1× | Pure PyTorch |
 | 2 | 48s | 2.5× | Initial CUDA |
-| 5 | 0.78s | **115-154×** | SSOR, float32, warm-start |
+| 5 | 89s | **1.1×** | OC optim, float32, warm-start |
 | 6 | ~0.04-0.08s | **1125-3000×** | Aggressive PTX (est.) |
+| **7** | **23.5s** | **4.2×** | **Direct sparse solver** |
+
+### Total Speedup Journey
+```
+Original:  101.2s  (baseline)
+Phase 5:    89.6s  (1.13×) - Algorithmic improvements
+Phase 7:    23.5s  (4.30×) - Direct solver breakthrough
+```
 
 ---
 
@@ -333,15 +426,16 @@ The distributed load fix (Phase 5.6) was critical:
 ## Remaining Opportunities
 
 ### High Impact (TODO)
-1. **Multigrid Preconditioner** - 10-20× PCG speedup
-2. **Tensor Core SIMP** - tcgen05.mma for 24×24 operations
-3. **CUDA Graphs** - Capture full SIMP loop
-4. **Direct Solver for Small Grids** - Dense Cholesky <5k DOF
+1. **~~Direct Solver for Small Grids~~** - ✅ COMPLETED - UMFPACK 4× speedup
+2. **Multigrid Preconditioner** - 10-20× PCG speedup for large grids
+3. **Tensor Core SIMP** - tcgen05.mma for 24×24 operations
+4. **CUDA Graphs** - Capture full SIMP loop
 
 ### Medium Impact (Nice-to-have)
-1. **FP8/FP4 for Preconditioner** - Blackwell-specific
-2. **Thread Block Clusters** - Multi-SM cooperation
-3. **Warp Specialization** - Persistent kernels
+1. **Aggressive Kernel Benchmark** - Test actual speedup vs standard
+2. **Fused PCG Kernel** - Single kernel for entire PCG step
+3. **FP8/FP4 for Preconditioner** - Blackwell-specific
+4. **Thread Block Clusters** - Multi-SM cooperation
 
 ### Low Impact (Polish)
 1. **Remove remaining syncs** - cudaDeviceSynchronize()
@@ -373,6 +467,7 @@ d867f65 - GPU Marching Cubes CUDA kernel (1.6-3.8×)
 19dea4b - Fix CUDA dtype mismatch
 690ced1 - SIMP solver: distributed load, adaptive PCG
 3f8024a - Aggressive PTX-optimized kernels
+<latest> - Direct sparse solver (scipy UMFPACK) - 4× speedup
 ```
 
 ---
@@ -381,12 +476,12 @@ d867f65 - GPU Marching Cubes CUDA kernel (1.6-3.8×)
 
 ```bash
 $ git diff --stat 8d275f1^..HEAD -- '*.cu' '*.py' | tail -1
-# ~2,500+ lines of CUDA and Python optimization code
+# ~3,000+ lines of CUDA and Python optimization code
 ```
 
 ---
 
-**Document Version:** 1.0  
-**Last Updated:** 2026-03-05  
+**Document Version:** 1.1  
+**Last Updated:** 2026-03-06  
 **Author:** AI Agent (Kilo)  
-**Status:** Aggressive optimizations ongoing, Phase 6 kernels compiling
+**Status:** Phase 7 complete - Direct solver breakthrough achieved

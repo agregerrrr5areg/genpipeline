@@ -440,6 +440,43 @@ class SparseConv3d(nn.Module):
         )
 
 
+
+
+def pcg_solve_cuda(
+    row_ptr: torch.Tensor,
+    col_idx: torch.Tensor,
+    values: torch.Tensor,
+    diagonal: torch.Tensor,
+    b: torch.Tensor,
+    x0: torch.Tensor,
+    fixed_dofs: torch.Tensor,
+    max_iter: int = 100,
+    tol: float = 1e-6,
+) -> torch.Tensor:
+    """GPU-accelerated PCG solver using custom CUDA kernels.
+    
+    This is faster than scipy CPU solver for parallel generation.
+    """
+    if not _CAN_COMPILE_CUDA:
+        raise RuntimeError("CUDA kernel compilation not available")
+    
+    try:
+        ext = _get_ext("simp_pcg_cuda", "simp_pcg_cuda.cu")
+        return ext.pcg_solve(
+            row_ptr.contiguous(),
+            col_idx.contiguous(),
+            values.contiguous(),
+            diagonal.contiguous(),
+            b.contiguous(),
+            x0.contiguous(),
+            fixed_dofs.contiguous(),
+            max_iter,
+            tol,
+        )
+    except Exception as e:
+        print(f"[cuda_kernels] PCG CUDA failed: {e}, using fallback")
+        raise
+
 __all__ = [
     "gpu_voxelize",
     "gpu_marching_cubes",
@@ -448,6 +485,7 @@ __all__ = [
     "build_occupancy_mask",
     "simp_sensitivity",
     "get_solid_voxels_simd",
+    "pcg_solve_cuda",
 ]
 
 

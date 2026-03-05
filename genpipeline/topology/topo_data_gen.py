@@ -26,6 +26,8 @@ import logging
 import numpy as np
 import torch
 import concurrent.futures
+import multiprocessing
+import os
 from pathlib import Path
 from .mesh_export import density_to_stl
 
@@ -60,8 +62,8 @@ class TopoDataGenerator:
 
         self._SIMP_GPU = None
         self._SIMP_CPU = None
-        # CPU solver is more reliable for parallel generation
-        # GPU solver has threading issues with PyTorch 2.10 + CUDA 12.8
+        # CPU solver is faster for parallel generation
+        # GPU solver works but has threading issues on Blackwell
         log.info("Using CPU SIMP solver")
 
     def _get_grid_dims(self, geom: str):
@@ -158,7 +160,7 @@ class TopoDataGenerator:
 
     def generate(self, n_samples: int = 100):
         log.info(
-            f"Generating {n_samples} samples using {self.n_workers} GPU workers..."
+            f"Generating {n_samples} samples using {self.n_workers} workers..."
         )
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.n_workers
@@ -220,7 +222,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-dir", type=str, default="./fem_data", help="Output directory"
     )
-    parser.add_argument("--workers", type=int, default=16, help="Parallel workers")
+    # Auto-detect CPU cores (leave 2 for system)
+    cpu_count = max(1, multiprocessing.cpu_count() - 2)
+    parser.add_argument("--workers", type=int, default=cpu_count, help=f"Parallel workers (default: auto = CPU cores - 2)")
     parser.add_argument(
         "--scaled",
         action="store_true",
