@@ -2,7 +2,7 @@
 
 A PyTorch-based generative design pipeline for topology optimization and structural design, featuring VAE-based design generation and Bayesian optimization for performance-driven design exploration.
 
-## 💡 Recent Improvements and Learnings
+## Recent Improvements and Learnings
 
 ### What We've Accomplished
 
@@ -27,7 +27,7 @@ A PyTorch-based generative design pipeline for topology optimization and structu
 - **Pipeline Speed**: Automated FEM data generation at 1.4s/variant
 - **Code Quality**: Comprehensive test suite with 6/6 integration test pass rate
 
-## 🚀 Quickstart
+## Quickstart
 
 ### Prerequisites
 - Python 3.13+
@@ -94,7 +94,7 @@ python -c "from genpipeline.config import load_config; print(load_config())"
 python -c "from genpipeline.config import save_config; save_config({'voxel_resolution': 128})"
 ```
 
-## 🔧 Built With
+## Built With
 
 ### Core Stack
 - **PyTorch** - Deep learning framework (CUDA 12.8 for Blackwell)
@@ -113,7 +113,7 @@ python -c "from genpipeline.config import save_config; save_config({'voxel_resol
 - **Coverage reporting** - Test coverage analysis
 - **GPU-specific testing** - Blackwell compatibility testing
 
-## 📋 Project Structure
+##  Project Structure
 
 ```
 genpipeline/
@@ -174,7 +174,7 @@ genpipeline/
 └── docs/                  # Documentation
 ```
 
-## 🧪 Testing
+## Testing
 
 ### Running Tests
 
@@ -272,30 +272,30 @@ Once ccx is native, the Bayesian optimisation loop (`VoxelFEMEvaluator`) needs n
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🤝 Contributing
+##  Contributing
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct, and the process for submitting pull requests.
 
-## 👥 Code of Conduct
+## Code of Conduct
 
 Our team follows a strict code of conduct to ensure a welcoming environment for all contributors. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for details.
 
-## 📝 Authors and Contributors
+##  Authors and Contributors
 
-- **Primary Maintainer**: [Your Name]
-- **Contributors**: [List of contributors]
+- **Primary Maintainer**: [Daniel]
+- **Contributors**: [Daniel]
 
 ## 🔐 Security
 
-Please report security vulnerabilities to [security@example.com](mailto:security@example.com).
+Please report security vulnerabilities to [fix later].
 
-## 📚 References
+## References
 
 - [PyTorch Documentation](https://pytorch.org/docs/)
 - [BoTorch Documentation](https://botorch.org/)
 - [Pydantic Documentation](https://pydantic.dev/)
 
-## 🚀 Acknowledgments
+## Acknowledgments
 
 - NVIDIA for Blackwell GPU support
 - PyTorch team for excellent deep learning framework
