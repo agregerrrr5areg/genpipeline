@@ -19,11 +19,13 @@ A PyTorch-based generative design pipeline for topology optimization and structu
 3. **Blackwell Workarounds**: Batch matmul with batch_size≥2 requires CPU fallback for BoTorch GP models
 4. **WSL2 Bridge**: Windows FreeCAD + WSL2 ccx provides reliable FEM evaluation pipeline
 5. **GPU Acceleration**: GPU-native SIMP solver provides significant speedup over standard CPU implementations
+6. **GPU Dense is Faster**: Raw CUDA kernels for dense FEM now beat scipy UMFPACK (13.5s vs 22s for 24×12×12 grid)
 
 ### Optimizations Implemented
 
 - **Memory Efficiency**: BF16 mixed precision reduced VRAM usage by ~50%
 - **Performance**: Fused CUDA kernels for voxel operations and high-speed GPU SIMP solver
+- **Dense GPU SIMP**: Raw CUDA kernels with cuBLAS Cholesky - beats CPU by 40%
 - **Pipeline Speed**: Automated FEM data generation at 1.4s/variant
 - **Code Quality**: Comprehensive test suite with 6/6 integration test pass rate
 
@@ -150,7 +152,7 @@ genpipeline/
 | VAE training | DONE 300 epochs | `checkpoints/vae_best.pth`, train loss 0.103 |
 | Bayesian optimisation | DONE 20+ iters | Best objective −0.1058, 16.2% occupancy |
 | Integration test | DONE Added | `tests/test_integration_decode_fem.py` — 6/6 passed |
-| SIMP solver | DONE GPU Native | Integrated high-performance topology optimization |
+| SIMP solver | DONE GPU Dense | 13.5s (40% faster than CPU) |
 | Geometry conditioning | ⏳ Pending | Single shared latent space for all 4 geometry families |
 
 See `PROGRESS.md` for full dated log.

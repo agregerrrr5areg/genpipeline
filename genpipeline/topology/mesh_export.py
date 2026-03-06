@@ -1,11 +1,15 @@
 """mesh_export.py — convert voxel density field to STL via marching cubes."""
+
 from __future__ import annotations
 import numpy as np
 
 
-def density_to_stl(density: np.ndarray, output_path: str,
-                   threshold: float = 0.5,
-                   voxel_size_mm: tuple = (100/32, 20/8, 20/8)) -> str:
+def density_to_stl(
+    density: np.ndarray,
+    output_path: str,
+    threshold: float = 0.5,
+    voxel_size_mm: tuple = (100 / 32, 20 / 8, 20 / 8),
+) -> str:
     """
     Convert (nx, ny, nz) density field to STL.
 
@@ -23,19 +27,34 @@ def density_to_stl(density: np.ndarray, output_path: str,
     from skimage.measure import marching_cubes
     from stl import mesh as stlmesh
 
-    if threshold < density.min() or threshold > density.max():
-        raise ValueError("density_to_stl: no surface found at threshold — "
-                         "threshold is outside the density field range")
+    # Handle empty or near-empty designs
+    if density.max() < 0.01:
+        # Empty design - return None to signal failure
+        return None
+
+    # Adjust threshold if outside density range
+    density_min = density.min()
+    density_max = density.max()
+
+    if threshold < density_min:
+        threshold = density_min + 0.1 * (density_max - density_min)
+    if threshold > density_max:
+        threshold = density_max - 0.1 * (density_max - density_min)
+
+    # Ensure minimum threshold
+    threshold = max(threshold, 0.1)
 
     try:
         verts, faces, _, _ = marching_cubes(density, level=threshold)
     except ValueError:
-        raise ValueError("density_to_stl: no surface found at threshold — "
-                         "check density field values")
+        raise ValueError(
+            "density_to_stl: no surface found at threshold — check density field values"
+        )
 
     if len(faces) == 0:
-        raise ValueError("density_to_stl: no surface found at threshold — "
-                         "check density field values")
+        raise ValueError(
+            "density_to_stl: no surface found at threshold — check density field values"
+        )
 
     sx, sy, sz = voxel_size_mm
     verts_mm = verts * np.array([sx, sy, sz])

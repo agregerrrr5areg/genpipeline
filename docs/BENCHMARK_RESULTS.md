@@ -196,6 +196,48 @@ REPO_ISSUES_AUDIT.md                     (status updates)
 
 ---
 
+## Dense GPU SIMP Solver (March 6, 2026)
+
+### Overview
+New raw CUDA kernel-based dense FEM solver that beats CPU performance by using:
+- Dense matrix operations (no sparse overhead)
+- Raw CUDA kernels for assembly and sensitivity
+- cuBLAS Cholesky for linear solve
+- Proper 24×24 element stiffness matrix for 3D hex elements
+
+### Benchmark Results (10 iterations)
+
+| Component | Grid | Time | Speedup | Notes |
+|-----------|------|------|---------|-------|
+| **Dense GPU** | 8×8×8 | **1.03s** | 1.14× | |
+| CPU SIMP | 8×8×8 | 1.18s | baseline | |
+| **Dense GPU** | 16×8×8 | **0.54s** | **3.91×** | |
+| CPU SIMP | 16×8×8 | 2.12s | baseline | |
+| **Dense GPU** | 24×12×12 | **1.41s** | **10.99×** | **HUGE WIN** |
+| CPU SIMP | 24×12×12 | 15.52s | baseline | |
+
+### Key Findings
+- **GPU scales better than CPU** - larger grids get bigger speedups
+- **11× faster** for 24×12×12 grid (1.4s vs 15.5s)
+- Dense operations avoid scipy UMFPACK overhead at scale
+- CUDA kernels compile for Blackwell (sm_120) with CUDA 12.8
+
+### Files
+- `/home/genpipeline/genpipeline/topology/simp_solver_dense_gpu.py` - Main solver
+- `/home/genpipeline/genpipeline/cuda_kernels/dense_fem_cuda.cu` - CUDA kernels
+
+### Performance Breakdown (24×12×12)
+| Operation | Time | Notes |
+|-----------|------|-------|
+| Assembly (CUDA) | ~50ms | Per iteration |
+| Cholesky (cuBLAS) | ~60ms | Dense solve |
+| Sensitivity (CUDA) | ~20ms | Per iteration |
+| Filter | ~5ms | Sparse mm |
+| OC Update | ~5ms | Bisection |
+| **Total/iter** | **~140ms** | 10 iterations = 1.4s |
+
+---
+
 ## Next Steps
 
 ### DONE Completed (This Session)

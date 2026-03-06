@@ -43,6 +43,87 @@ class TopoDataGenerator:
         "tapered": {"fixed_face": "x_min", "load_face": "x_max", "load_dof": 2},
         "ribbed": {"fixed_face": "x_min", "load_face": "x_max", "load_dof": 2},
         "lbracket": {"fixed_face": "z_min", "load_face": "x_max", "load_dof": 2},
+        "bridge": {
+            "fixed_face": ["x_min", "x_max"],
+            "load_face": "center",
+            "load_dof": 2,
+        },
+        "arch": {"fixed_face": ["x_min", "x_max"], "load_face": "top", "load_dof": 2},
+        "3dload": {
+            "fixed_face": "x_min",
+            "load_face": "x_max",
+            "load_dof": [1, 2],
+            "multi_load": True,
+        },
+        "offset": {"fixed_face": "x_min", "load_face": "x_max_offset", "load_dof": 2},
+        "center": {"fixed_face": "x_min", "load_face": "center_z", "load_dof": 2},
+        "portal": {
+            "fixed_face": ["y_min", "y_max"],
+            "load_face": "top_center",
+            "load_dof": 2,
+        },
+        "spoke": {"fixed_face": "center", "load_face": "outer_ring", "load_dof": 2},
+        "tower": {"fixed_face": "z_min", "load_face": "z_max", "load_dof": [1, 2]},
+        "sandwich": {
+            "fixed_face": ["z_min", "z_max"],
+            "load_face": "center",
+            "load_dof": 2,
+        },
+        "simply": {"fixed_face": ["x_min", "x_max"], "load_face": "top", "load_dof": 2},
+        # Organic multi-load shapes
+        "branch": {
+            "fixed_face": "x_min",
+            "load_face": "x_max",
+            "load_dof": 2,
+            "multi_load": True,
+            "load_positions": ["top", "mid", "bottom"],
+        },
+        "y_tree": {
+            "fixed_face": "z_min",
+            "load_face": "x_max",
+            "load_dof": 2,
+            "multi_load": True,
+            "load_positions": ["top", "mid_y", "mid_z"],
+        },
+        "network": {
+            "fixed_face": ["x_min", "y_min"],
+            "load_face": "x_max",
+            "load_dof": 2,
+            "multi_load": True,
+            "load_pattern": "grid",
+        },
+    }
+
+    GEOM_WEIGHTS = {
+        "bridge": 2,
+        "arch": 2,
+        "3dload": 2,
+        "portal": 2,
+        "spoke": 2,
+        "tower": 2,
+        "sandwich": 2,
+        "simply": 1,
+        "offset": 1,
+        "center": 1,
+        "cantilever": 1,
+        "tapered": 1,
+        "ribbed": 1,
+        "lbracket": 1,
+    }
+
+    GEOM_WEIGHTS = {
+        "bridge": 2,
+        "arch": 2,
+        "3dload": 2,
+        "offset": 1,
+        "center": 1,
+        "cantilever": 1,
+        "tapered": 1,
+        "ribbed": 1,
+        "lbracket": 1,
+        "branch": 1,
+        "y_tree": 1,
+        "network": 1,
     }
 
     def __init__(
@@ -50,8 +131,10 @@ class TopoDataGenerator:
         output_dir: str = "./fem_data",
         n_workers: int = 2,
         use_gpu: bool = True,
-        n_iters: int = 60,
-        grid_size: str = "large",
+        n_iters: int = 30,  # Reduced from 60, early stopping will provide additional speedup
+        grid_size: str = "medium",
+        penal: float = 3.5,
+        organic_mode: bool = True,
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -59,37 +142,63 @@ class TopoDataGenerator:
         self.use_gpu = use_gpu
         self.n_iters = n_iters
         self.grid_size = grid_size
+        self.penal = penal
+        self.organic_mode = organic_mode
 
-        self._SIMP_GPU = None
+        grid_memory = {
+            "small": "200MB",
+            "medium": "800MB",
+            "large": "2GB",
+        }
+        log.info(
+            f"Grid size: {self.grid_size} (~{grid_memory.get(self.grid_size, 'unknown')} per worker)"
+        )
+
+        self._SIMP_GPU = None  # Will be set on first use
         self._SIMP_CPU = None
-        # CPU solver is faster for parallel generation
-        # GPU solver works but has threading issues on Blackwell
-        log.info("Using CPU SIMP solver")
+        if use_gpu:
+            log.info(
+                f"Using GPU SIMP solver (penal={penal}, organic_mode={organic_mode})"
+            )
+        else:
+            log.info(
+                f"Using CPU SIMP solver (penal={penal}, organic_mode={organic_mode})"
+            )
 
     def _get_grid_dims(self, geom: str):
         if self.grid_size == "small":
-            if geom == "lbracket":
-                nx = np.random.randint(12, 20)
-                ny = np.random.randint(6, 10)
-                nz = np.random.randint(12, 20)
-            else:
-                nx = np.random.randint(12, 20)
-                ny = np.random.randint(4, 8)
-                nz = np.random.randint(4, 8)
+            nx, ny, nz = 16, 8, 8
+            return nx, ny, nz
         elif self.grid_size == "medium":
-            if geom == "lbracket":
+            if geom in ("lbracket", "bridge", "arch", "center"):
                 nx = np.random.randint(20, 28)
                 ny = np.random.randint(8, 12)
                 nz = np.random.randint(20, 28)
+            elif geom in ("3dload", "offset"):
+                nx = np.random.randint(22, 32)
+                ny = np.random.randint(8, 12)
+                nz = np.random.randint(8, 12)
+            elif geom in ("branch", "y_tree", "network"):
+                nx = np.random.randint(22, 32)
+                ny = np.random.randint(10, 16)
+                nz = np.random.randint(10, 16)
             else:
                 nx = np.random.randint(20, 32)
                 ny = np.random.randint(6, 10)
                 nz = np.random.randint(6, 10)
-        else:  # large (default for high-quality data)
-            if geom == "lbracket":
+        else:
+            if geom in ("lbracket", "bridge", "arch", "center"):
                 nx = np.random.randint(24, 36)
                 ny = np.random.randint(8, 12)
                 nz = np.random.randint(24, 36)
+            elif geom in ("3dload", "offset"):
+                nx = np.random.randint(28, 40)
+                ny = np.random.randint(8, 14)
+                nz = np.random.randint(8, 14)
+            elif geom in ("branch", "y_tree", "network"):
+                nx = np.random.randint(24, 36)
+                ny = np.random.randint(12, 18)
+                nz = np.random.randint(12, 18)
             else:
                 nx = np.random.randint(24, 40)
                 ny = np.random.randint(6, 12)
@@ -97,9 +206,13 @@ class TopoDataGenerator:
         return nx, ny, nz
 
     def _create_solver(self, nx, ny, nz, bcs):
-        if self.use_gpu and self._SIMP_GPU:
+        if self.use_gpu:
+            if self._SIMP_GPU is None:
+                from .simp_solver_dense_gpu import DenseGPUSolver
+
+                self._SIMP_GPU = DenseGPUSolver
             return self._SIMP_GPU(
-                nx=nx, ny=ny, nz=nz, penal=3.0, rmin=1.5, boundary_conditions=bcs
+                nx=nx, ny=ny, nz=nz, penal=self.penal, rmin=1.5, device="cuda"
             )
         else:
             if self._SIMP_CPU is None:
@@ -107,18 +220,30 @@ class TopoDataGenerator:
 
                 self._SIMP_CPU = SIMPSolver
             return self._SIMP_CPU(
-                nx=nx, ny=ny, nz=nz, penal=3.0, rmin=1.5, boundary_conditions=bcs
+                nx=nx, ny=ny, nz=nz, penal=self.penal, rmin=1.5, boundary_conditions=bcs
             )
 
+    def _select_geometry(self):
+        if self.organic_mode:
+            geoms = list(self.GEOM_BCS.keys())
+            weights = [self.GEOM_WEIGHTS.get(g, 1) for g in geoms]
+            geom = np.random.choice(geoms, p=np.array(weights) / sum(weights))
+        else:
+            geom = np.random.choice(list(self.GEOM_BCS.keys()))
+        return geom
+
     def generate_single(self, i, n_samples):
-        geoms = list(self.GEOM_BCS.keys())
-        geom = np.random.choice(geoms)
+        geom = self._select_geometry()
         bcs = self.GEOM_BCS[geom]
 
         nx, ny, nz = self._get_grid_dims(geom)
 
-        volfrac = np.random.uniform(0.2, 0.5)
-        force_mag = np.random.uniform(500, 2000)
+        if self.organic_mode:
+            volfrac = np.random.uniform(0.12, 0.35)
+            force_mag = np.random.uniform(200, 5000)
+        else:
+            volfrac = np.random.uniform(0.2, 0.5)
+            force_mag = np.random.uniform(500, 2000)
 
         solver = self._create_solver(nx, ny, nz, bcs)
         density = solver.run(volfrac=volfrac, n_iters=self.n_iters, force_mag=force_mag)
@@ -129,15 +254,19 @@ class TopoDataGenerator:
         json_path = self.output_dir / f"{stem}_fem_results.json"
 
         voxel_size_mm = (100.0 / nx, 20.0 / ny, 20.0 / nz)
-        density_to_stl(
+        stl_result = density_to_stl(
             density, str(stl_path), threshold=0.5, voxel_size_mm=voxel_size_mm
         )
 
+        if stl_result is None:
+            # Empty design, raise an exception to signal failure
+            raise ValueError(f"Empty design for {geom}")
+
         compliance = solver.last_compliance
         total_vol = 100.0 * 20.0 * 20.0
-        if geom == "lbracket":
+        if geom in ("lbracket", "bridge", "arch"):
             total_vol = 100.0 * 20.0 * 100.0
-        mass = density.mean() * total_vol * 1.05e-6  # Plastic density
+        mass = density.mean() * total_vol * 1.05e-6
 
         results = {
             "stress_max": float(compliance * 0.1),
@@ -150,6 +279,7 @@ class TopoDataGenerator:
                 "nx": int(nx),
                 "ny": int(ny),
                 "nz": int(nz),
+                "penal": self.penal,
             },
         }
 
@@ -159,9 +289,7 @@ class TopoDataGenerator:
         log.info(f"[{i + 1}/{n_samples}] Generated {geom}: {stl_path.name}")
 
     def generate(self, n_samples: int = 100):
-        log.info(
-            f"Generating {n_samples} samples using {self.n_workers} workers..."
-        )
+        log.info(f"Generating {n_samples} samples using {self.n_workers} workers...")
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.n_workers
         ) as executor:
@@ -224,7 +352,12 @@ if __name__ == "__main__":
     )
     # Auto-detect CPU cores (leave 2 for system)
     cpu_count = max(1, multiprocessing.cpu_count() - 2)
-    parser.add_argument("--workers", type=int, default=cpu_count, help=f"Parallel workers (default: auto = CPU cores - 2)")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=cpu_count,
+        help=f"Parallel workers (default: auto = CPU cores - 2)",
+    )
     parser.add_argument(
         "--scaled",
         action="store_true",
@@ -239,8 +372,8 @@ if __name__ == "__main__":
         "--iterations",
         "-i",
         type=int,
-        default=15,
-        help="SIMP iterations per sample (default: 15, lower = faster)",
+        default=30,
+        help="SIMP iterations per sample (default: 30, lower = faster)",
     )
     args = parser.parse_args()
 
