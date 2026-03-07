@@ -10,6 +10,7 @@ Key optimizations:
 import torch
 import numpy as np
 import threading
+from contextlib import nullcontext as _nullctx
 from typing import Tuple, Optional
 
 _cuda_load_lock = threading.Lock()
@@ -53,6 +54,12 @@ class DenseGPUSolver:
         self.H, self.Hs = self._build_filter()
 
         self.last_compliance = 0.0
+
+        # Per-solver stream: each instance gets an isolated cuSOLVER context so
+        # concurrent threads never share internal cuSOLVER state.
+        self.stream = (
+            torch.cuda.Stream(device=self.device) if self.device == "cuda" else None
+        )
 
         # Try to load CUDA kernels
         self._load_cuda_kernels()
@@ -253,11 +260,14 @@ class DenseGPUSolver:
             else:
                 self._apply_bc(K, f, fixed_dofs)
 
-            # Solve on CPU with numpy (thread-safe; avoids cuSOLVER concurrent-call crash)
+            # Solve via cuSPARSE SpMV-based PCG.
+            # On Blackwell sm_120, cuBLAS GEMV and Cholesky are both broken for
+            # concurrent use.  cuSPARSE SpMV (torch.mv on CSR tensors) works fine.
+            # Converting the dense K to CSR first avoids all cuBLAS calls.
             K_reg = K + torch.eye(self.n_dof, device=self.device) * 1e-5
-            K_np = K_reg.cpu().float().numpy()
-            f_np = f.cpu().float().numpy()
-            u = torch.from_numpy(np.linalg.solve(K_np, f_np)).to(self.device)
+            K_csr = K_reg.to_sparse_csr()
+            diag = K_reg.diagonal().clamp(min=1e-10)
+            u = self._pcg_sparse(K_csr, f, 1.0 / diag)
 
             # Sensitivity
             if self.use_cuda_kernels:
@@ -315,6 +325,35 @@ class DenseGPUSolver:
 
         K[:] = torch.from_numpy(K_np).to(K.device)
         f[:] = torch.from_numpy(f_np).to(f.device)
+
+    @staticmethod
+    def _pcg_sparse(A_csr, b, M_inv_diag, tol=1e-5, max_iter=500):
+        """Jacobi-PCG using cuSPARSE SpMV (torch.mv on CSR).
+
+        Avoids cuBLAS entirely — safe on Blackwell sm_120 where cublasSgemv
+        and cublasSgemmStridedBatched are broken.
+        """
+        x = torch.zeros_like(b)
+        r = b - torch.mv(A_csr, x)
+        z = M_inv_diag * r
+        p = z.clone()
+        rz = torch.dot(r, z)
+        b_norm = b.norm()
+        for _ in range(max_iter):
+            Ap = torch.mv(A_csr, p)
+            denom = torch.dot(p, Ap)
+            if denom < 1e-25:
+                break
+            alpha = rz / denom
+            x = x + alpha * p
+            r = r - alpha * Ap
+            if r.norm() < tol * b_norm:
+                break
+            z = M_inv_diag * r
+            rz_new = torch.dot(r, z)
+            p = z + (rz_new / rz) * p
+            rz = rz_new
+        return x
 
     def _sensitivity_slow(self, u, xPhys):
         """Fallback sensitivity."""
