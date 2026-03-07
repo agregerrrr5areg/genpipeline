@@ -841,30 +841,30 @@ class SIMPSolverGPU:
         return xnew, xPhys_new
 
     def _build_edof_mapping(self):
+        """Vectorised edof mapping (replaces Python triple-loop)."""
         nx, ny, nz = self.nx, self.ny, self.nz
-        n_base = np.array(
-            [
-                0,
-                (ny + 1) * (nz + 1),
-                (ny + 1) * (nz + 1) + (nz + 1),
-                (nz + 1),
-                1,
-                (ny + 1) * (nz + 1) + 1,
-                (ny + 1) * (nz + 1) + (nz + 1) + 1,
-                (nz + 1) + 1,
-            ]
-        )
-        edof_base = np.zeros(24, dtype=int)
-        for i in range(8):
-            edof_base[3 * i : 3 * i + 3] = 3 * n_base[i] + np.arange(3)
-        edof_mat = np.zeros((nx * ny * nz, 24), dtype=int)
-        for i in range(nx):
-            for j in range(ny):
-                for k in range(nz):
-                    edof_mat[i * ny * nz + j * nz + k, :] = edof_base + 3 * (
-                        i * (ny + 1) * (nz + 1) + j * (nz + 1) + k
-                    )
-        return torch.from_numpy(edof_mat).to(dtype=torch.int32)
+        n_base = np.array([
+            0,
+            (ny + 1) * (nz + 1),
+            (ny + 1) * (nz + 1) + (nz + 1),
+            (nz + 1),
+            1,
+            (ny + 1) * (nz + 1) + 1,
+            (ny + 1) * (nz + 1) + (nz + 1) + 1,
+            (nz + 1) + 1,
+        ])
+        edof_base = np.concatenate([3 * n_base[i] + np.arange(3) for i in range(8)])  # (24,)
+
+        # Element corner node offsets: broadcast across all (i,j,k)
+        ii = np.arange(nx, dtype=np.int32)
+        jj = np.arange(ny, dtype=np.int32)
+        kk = np.arange(nz, dtype=np.int32)
+        gi, gj, gk = np.meshgrid(ii, jj, kk, indexing="ij")  # (nx,ny,nz) each
+        # Node index of element corner (0,0,0): i*(ny+1)*(nz+1) + j*(nz+1) + k
+        corner0 = (gi * (ny + 1) * (nz + 1) + gj * (nz + 1) + gk).ravel()  # (n_elem,)
+        # edof_mat[e, :] = edof_base + 3 * corner0[e]
+        edof_mat = edof_base[None, :] + 3 * corner0[:, None]  # (n_elem, 24)
+        return torch.from_numpy(edof_mat.astype(np.int32)).to(dtype=torch.int32)
 
     def _build_filter(self, nx, ny, nz, rmin, dtype=torch.float32):
         """Vectorised sensitivity filter (replaces Python triple-loop).
