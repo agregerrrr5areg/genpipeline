@@ -1,6 +1,6 @@
 {
-  "designs_dir": "/home/genpipeline/eval_results/samples",
-  "fem_data_output": "/home/genpipeline/fem/data",
+  "designs_dir": "./data",
+  "fem_data_output": "./data",
   "voxel_resolution": 64,
   "use_sdf": false,
   "latent_dim": 32,
@@ -11,7 +11,7 @@
   "pos_weight": 30.0,
   "device": "cuda",
   "n_optimization_iterations": 1000,
-  "output_dir": "./optimization_results",
+  "output_dir": "./results",
   "freecad_path": null,
   "seed": 42,
   "n_init_points": 5,
@@ -21,10 +21,10 @@
     "acquisition_function": "UCB",
     "beta": 0.1,
     "use_botorch": true,
-    "num_restarts": 10,
-    "raw_samples": 512,
+    "num_restarts": 3,
+    "raw_samples": 64,
     "max_iterations": 100,
-    "parallel_evaluations": 4
+    "parallel_evaluations": 8
   },
   "performance_weights": {
     "stress": 1.0,
