@@ -440,8 +440,6 @@ class SparseConv3d(nn.Module):
         )
 
 
-
-
 def pcg_solve_cuda(
     row_ptr: torch.Tensor,
     col_idx: torch.Tensor,
@@ -453,10 +451,7 @@ def pcg_solve_cuda(
     max_iter: int = 100,
     tol: float = 1e-6,
 ) -> torch.Tensor:
-    """GPU-accelerated PCG solver using custom CUDA kernels.
-    
-    This is faster than scipy CPU solver for parallel generation.
-    """
+    """GPU-accelerated Jacobi-PCG solver (faster than scipy for parallel generation)."""
     if not _CAN_COMPILE_CUDA:
         raise RuntimeError("CUDA kernel compilation not available")
     
@@ -477,18 +472,6 @@ def pcg_solve_cuda(
         print(f"[cuda_kernels] PCG CUDA failed: {e}, using fallback")
         raise
 
-__all__ = [
-    "gpu_voxelize",
-    "gpu_marching_cubes",
-    "fused_reparameterize",
-    "SparseConv3d",
-    "build_occupancy_mask",
-    "simp_sensitivity",
-    "get_solid_voxels_simd",
-    "pcg_solve_cuda",
-]
-
-
 def simp_sensitivity_aggressive(
     xPhys: torch.Tensor,
     u: torch.Tensor,
@@ -499,16 +482,7 @@ def simp_sensitivity_aggressive(
     ny: int,
     nz: int,
 ) -> torch.Tensor:
-    """Aggressive SIMP sensitivity with warp shuffles and PTX optimizations.
-    
-    Uses:
-    - Warp-level reductions (no shared memory barriers)
-    - L1 cache hints (__ldg) for better locality
-    - Register-tiled Ke (no shared memory for stiffness matrix)
-    - No cudaDeviceSynchronize() calls
-    
-    Expected 2-3x speedup over standard kernel for large grids.
-    """
+    """SIMP sensitivity with warp shuffles and PTX optimizations (2-3x faster for large grids)."""
     if _CAN_COMPILE_CUDA:
         try:
             ext = _get_ext("simp_aggressive_ext", "simp_sensitivity_aggressive.cu")
@@ -524,11 +498,19 @@ def simp_sensitivity_aggressive(
             )
         except Exception as e:
             print(f"[cuda_kernels] Aggressive sensitivity failed: {e}, using standard kernel")
-            # Fall through to standard kernel
-    
-    # Fall back to standard sensitivity
+
     return simp_sensitivity(xPhys, u, Ke, edof_mat, penal, nx, ny, nz)
 
 
-# Update __all__
-__all__.extend(["simp_sensitivity_aggressive"])
+__all__ = [
+    "gpu_voxelize",
+    "gpu_marching_cubes",
+    "fused_reparameterize",
+    "fused_spmv",
+    "SparseConv3d",
+    "build_occupancy_mask",
+    "simp_sensitivity",
+    "simp_sensitivity_aggressive",
+    "get_solid_voxels_simd",
+    "pcg_solve_cuda",
+]
