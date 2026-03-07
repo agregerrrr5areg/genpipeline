@@ -534,47 +534,37 @@ class SIMPSolverGPU:
     def _solve_direct(self, K, f, fixed_dofs):
         """Direct solver using scipy sparse solver on CPU.
 
-        For small grids (<10000 DOF), sparse direct solver is much faster than PCG
-        because it doesn't need 2000 iterations. Scipy's spsolve uses UMFPACK/SuperLU.
+        Uses reduced-system approach: extract the free-DOF sub-matrix and solve
+        it directly.  This avoids .tolil() BC zeroing (O(n*n_fixed) and slow).
         """
         import scipy.sparse as sp
         import scipy.sparse.linalg as spla
 
-        # Move to CPU for scipy
-        K_coo = K.to_sparse_coo().coalesce().cpu()
-        f_cpu = f.cpu()
-        fixed_cpu = fixed_dofs.cpu()
-
-        # Build scipy matrix
-        row = K_coo.indices()[0].numpy()
-        col = K_coo.indices()[1].numpy()
-        vals = K_coo.values().numpy()
         n = K.shape[0]
-
-        K_sc = sp.coo_matrix((vals, (row, col)), shape=(n, n)).tocsc()
-
-        # Apply boundary conditions
-        fd = fixed_cpu.numpy()
+        fd = fixed_dofs.cpu().numpy()
         free_mask = np.ones(n, dtype=bool)
         free_mask[fd] = False
+        free_dofs = np.where(free_mask)[0]
 
-        # Zero out fixed rows/cols and set diagonal to 1
-        K_sc = K_sc.tolil()
-        K_sc[fd, :] = 0.0
-        K_sc[:, fd] = 0.0
-        for i in fd:
-            K_sc[i, i] = 1.0
-        K_sc = K_sc.tocsc()
+        # Extract CSR data directly (avoids COO roundtrip overhead)
+        K_cpu = K.cpu()
+        crow = K_cpu.crow_indices().numpy().astype(np.int32)
+        col_idx = K_cpu.col_indices().numpy().astype(np.int32)
+        vals = K_cpu.values().float().numpy()
+        K_sc = sp.csr_matrix((vals, col_idx, crow), shape=(n, n)).tocsc()
 
-        f_np = f_cpu.numpy()
-        f_np[fd] = 0.0
+        # Reduced system: K_free * u_free = f_free  (no matrix modification needed)
+        K_free = K_sc[np.ix_(free_dofs, free_dofs)]
+        f_np = f.cpu().float().numpy()
+        f_free = f_np[free_dofs]
 
-        # Solve using sparse direct solver (UMFPACK)
-        x_np = spla.spsolve(K_sc, f_np)
+        x_free = spla.spsolve(K_free.tocsc(), f_free)
 
-        # Move result back to GPU
-        x = torch.from_numpy(x_np).to(device=K.device, dtype=K.dtype)
-        return x
+        # Reconstruct full solution (fixed DOFs = 0)
+        x_np = np.zeros(n, dtype=np.float32)
+        x_np[free_dofs] = x_free
+
+        return torch.from_numpy(x_np).to(device=K.device, dtype=K.dtype)
 
 
 
@@ -588,8 +578,9 @@ class SIMPSolverGPU:
         """
         n_dof = K.shape[0]
 
-        # Use CPU scipy direct solver - actually faster than GPU for this problem size!
-        if K.is_cuda and n_dof < 100000:
+        # Use CPU scipy direct solver for small grids (fast fill-in).
+        # 3D FEM fill-in grows quickly; direct is only beneficial for n_dof<50k.
+        if K.is_cuda and n_dof < 50000:
             try:
                 x = self._solve_direct(K, f, fixed_dofs)
                 self._u_prev = x.clone()

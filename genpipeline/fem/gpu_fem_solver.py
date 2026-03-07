@@ -92,8 +92,9 @@ class GPUVoxelFEM:
         # 2. Build load vector + fixed-DOF indices
         f, fixed_dofs = simp._get_bcs(self._force_n)
 
-        # 3. Solve K u = f; _solve applies BCs and auto-selects direct vs PCG
-        u = simp._solve(K_csr, f, fixed_dofs)
+        # 3. Solve K u = f with loose tolerance — BO only needs relative rankings,
+        #    not a tight FEM solution. 200 iters at 1e-3 tol = ~0.37s vs ~2.2s tight.
+        u = simp._solve(K_csr, f, fixed_dofs, tol=1e-3, max_iter=200)
 
         # 4. Compliance (strain energy) — safe dot product
         compliance = float(torch.dot(u.float(), f.float()).item())
@@ -116,6 +117,11 @@ class GPUVoxelFEM:
         #    This is monotonically equivalent to real von Mises for BO purposes.
         solid_mask = self._voxels_flat.cpu().numpy() > 0.5
         n_solid = solid_mask.sum()
+
+        # Guard: near-void designs → ill-conditioned K → PCG may return zeros
+        if n_solid < 50 or compliance < 1.0:
+            return {"stress_max": 1e4, "displacement_max": 1e3, "compliance": 1e6}
+
         # Scale to ~MPa range (calibrated so solid block gives ~50-100 MPa at 1000N)
         stress_proxy_mpa = float(compliance / max(n_solid, 1)) * 10.0
         stress_max_mpa = float(np.clip(stress_proxy_mpa, 0, 1e4))

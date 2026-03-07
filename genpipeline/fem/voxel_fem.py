@@ -453,7 +453,7 @@ class VoxelFEMEvaluator:
             z_t = torch.from_numpy(np.array(z).reshape(1, -1)).float().to(device)
             voxels = vae_model.decode(z_t).cpu().numpy().squeeze()
 
-        # Downsample 64^3 to 32^3 for speed
+        # Downsample 64^3 to 32^3 for FEM (preserves topology detail)
         from scipy.ndimage import zoom
 
         voxels = zoom(voxels, 0.5, order=1)
