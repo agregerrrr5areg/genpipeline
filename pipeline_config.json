@@ -4,7 +4,7 @@
   "voxel_resolution": 64,
   "use_sdf": false,
   "latent_dim": 32,
-  "batch_size": 128,
+  "batch_size": 16,
   "epochs": 500,
   "learning_rate": 0.0003,
   "beta_vae": 0.05,

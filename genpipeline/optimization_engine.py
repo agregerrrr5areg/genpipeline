@@ -26,11 +26,8 @@ try:
     from botorch.fit import fit_gpytorch_mll
     from gpytorch.mlls import ExactMarginalLogLikelihood
     from botorch.optim import optimize_acqf
-    from botorch.acquisition.multi_objective import (
-        qLogExpectedHypervolumeImprovement as qExpectedHypervolumeImprovement,
-    )
+    from botorch.acquisition import qUpperConfidenceBound
     from botorch.utils.multi_objective.pareto import is_non_dominated
-    from botorch.utils.multi_objective.hypervolume import NondominatedPartitioning
 
     BOTORCH_AVAILABLE = True
 except ImportError as e:
@@ -272,41 +269,40 @@ class DesignOptimizer:
             z_batch = np.random.randn(q, self.latent_dim) * 2.0
             return self._evaluate_latent_batch(z_batch)
 
-        # Add safety margin for numerical stability
-        train_X_raw = torch.tensor(
-            np.array([x for x, ok in zip(self.x_history, valid_mask) if ok]),
-            dtype=torch.float64,
-        ).to(botorch_device)
-        train_Y = torch.tensor(
-            np.array([y for y, ok in zip(self.y_history, valid_mask) if ok]),
-            dtype=torch.float64,
-        ).to(botorch_device)
+        # Scalarize [stress, mass] → single objective for fast qUCB BO.
+        # qUpperConfidenceBound is analytical (no MC) — much faster than qEHVI
+        # in 32D on CPU (qEHVI with q=8 takes 20+ min; qUCB takes seconds).
+        valid_ys = np.array([y for y, ok in zip(self.y_history, valid_mask) if ok])
+        valid_xs = np.array([x for x, ok in zip(self.x_history, valid_mask) if ok])
+
+        # Normalize each objective to [0,1] then weighted sum (minimize → negate to maximize)
+        y_min = valid_ys.min(axis=0)
+        y_max = valid_ys.max(axis=0)
+        y_range = np.where(y_max - y_min > 1e-8, y_max - y_min, 1.0)
+        y_norm = (valid_ys - y_min) / y_range  # (n, 2) each in [0,1]
+
+        w_stress = float(self.sim_cfg.get("w_stress", 1.0))
+        w_mass = float(self.sim_cfg.get("w_mass", 0.05))
+        w_total = w_stress + w_mass + 1e-9
+        score = -(w_stress * y_norm[:, 0] + w_mass * y_norm[:, 1]) / w_total  # maximize
+
+        train_X_raw = torch.tensor(valid_xs, dtype=torch.float64).to(botorch_device)
+        train_Y_scalar = torch.tensor(score, dtype=torch.float64).unsqueeze(1).to(botorch_device)
 
         # Normalize inputs to [0,1] cube for BoTorch
         X_min = train_X_raw.min(dim=0).values
         X_max = train_X_raw.max(dim=0).values
         X_range = (X_max - X_min).clamp(min=1e-6)
         train_X = (train_X_raw - X_min) / X_range
+        self._X_min, self._X_range = X_min, X_range
 
-        # Standardize outputs for better convergence
-        train_Y_std = (train_Y - train_Y.mean(dim=0)) / (train_Y.std(dim=0) + 1e-6)
-        train_Y_std = -train_Y_std  # Invert for maximization
-
-        self.gp_model = SingleTaskGP(train_X, train_Y_std)
-        self._X_min, self._X_range = X_min, X_range  # Store for candidate rescaling
+        self.gp_model = SingleTaskGP(train_X, train_Y_scalar)
         mll = ExactMarginalLogLikelihood(self.gp_model.likelihood, self.gp_model)
         fit_gpytorch_mll(mll)
 
-        # Use more conservative reference point for hypervolume improvement
-        ref_point = train_Y_std.min(dim=0).values - 0.1
-        partitioning = NondominatedPartitioning(ref_point=ref_point, Y=train_Y_std)
-        acq = qExpectedHypervolumeImprovement(
-            model=self.gp_model,
-            ref_point=ref_point,
-            partitioning=partitioning,
-        )
+        beta = float(self.sim_cfg.get("bo_beta", 0.1))
+        acq = qUpperConfidenceBound(model=self.gp_model, beta=beta)
 
-        # Bounds in normalized [0,1] space
         bounds = torch.zeros(2, self.latent_dim, dtype=torch.float64).to(botorch_device)
         bounds[1] = 1.0
 
@@ -314,62 +310,11 @@ class DesignOptimizer:
             acq,
             bounds=bounds,
             q=q,
-            num_restarts=10,
-            raw_samples=512,
+            num_restarts=3,
+            raw_samples=64,
         )
 
-        # Rescale candidates back to original latent space
         candidates = candidates * self._X_range + self._X_min
-
-        return self._evaluate_latent_batch(candidates.cpu().numpy())
-
-        # Fit multi-output GP on CPU (Search space is latent_dim only)
-        valid_x = [x for x, ok in zip(self.x_history, valid_mask) if ok]
-        valid_y = [y for y, ok in zip(self.y_history, valid_mask) if ok]
-        train_X_raw = torch.tensor(np.array(valid_x), dtype=torch.float64).to(
-            botorch_device
-        )
-        train_Y = torch.tensor(np.array(valid_y), dtype=torch.float64).to(
-            botorch_device
-        )
-
-        # Normalise X to [0,1] — botorch GP expects unit-cube inputs
-        X_min = train_X_raw.min(dim=0).values
-        X_max = train_X_raw.max(dim=0).values
-        X_range = (X_max - X_min).clamp(min=1e-6)
-        train_X = (train_X_raw - X_min) / X_range
-
-        train_Y_std = (train_Y - train_Y.mean(dim=0)) / (train_Y.std(dim=0) + 1e-6)
-        train_Y_std = -train_Y_std
-
-        self.gp_model = SingleTaskGP(train_X, train_Y_std)
-        self._X_min, self._X_range = X_min, X_range  # store for candidate rescaling
-        mll = ExactMarginalLogLikelihood(self.gp_model.likelihood, self.gp_model)
-        fit_gpytorch_mll(mll)
-
-        ref_point = train_Y_std.min(dim=0).values - 0.1
-        partitioning = NondominatedPartitioning(ref_point=ref_point, Y=train_Y_std)
-        acq = qExpectedHypervolumeImprovement(
-            model=self.gp_model,
-            ref_point=ref_point,
-            partitioning=partitioning,
-        )
-
-        # Bounds in normalised [0,1] space
-        bounds = torch.zeros(2, self.latent_dim, dtype=torch.float64).to(botorch_device)
-        bounds[1] = 1.0
-
-        candidates, _ = optimize_acqf(
-            acq,
-            bounds=bounds,
-            q=q,
-            num_restarts=10,
-            raw_samples=512,
-        )
-
-        # Rescale candidates back to original latent space
-        candidates = candidates * self._X_range + self._X_min
-
         return self._evaluate_latent_batch(candidates.cpu().numpy())
 
     def _build_preserved_mask(self, regions: list, resolution: int = 64) -> np.ndarray:
