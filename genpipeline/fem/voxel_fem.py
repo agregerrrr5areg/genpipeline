@@ -464,37 +464,38 @@ class VoxelFEMEvaluator:
         # Try GPU FEM first if enabled
         if self.use_gpu:
             try:
-                from genpipeline.fem.gpu_fem_solver import GPUConjugateGradientFEM
+                from genpipeline.fem.gpu_fem_solver import GPUVoxelFEM
 
-                gpu_fem = GPUConjugateGradientFEM(voxel_size_mm=1.0, material="steel")
-                fem_res = gpu_fem.solve(
-                    voxels,
+                gpu_fem = GPUVoxelFEM(
+                    voxels=voxels,
                     fixed_face=self.fixed_face,
                     load_face=self.load_face,
                     force_n=self.force_n,
-                    bbox=bbox,
                 )
-                if is_valid_fem_result({"stress": fem_res["stress_max"]}):
-                    solid_frac = float((voxels > 0.5).mean())
-                    D, H, W = voxels.shape
-                    if bbox:
-                        vol_mm3 = (
-                            (bbox["x"][1] - bbox["x"][0])
-                            * (bbox["y"][1] - bbox["y"][0])
-                            * (bbox["z"][1] - bbox["z"][0])
-                        ) * solid_frac
-                    else:
-                        vol_mm3 = D * H * W * solid_frac
-                    mass = vol_mm3 * 7900 / 1e9
-                    return {
-                        "stress": fem_res["stress_max"],
-                        "compliance": fem_res["compliance"],
-                        "mass": mass,
-                    }
+                fem_res = gpu_fem.solve()
+                solid_frac = float((voxels > 0.5).mean())
+                D, H, W = voxels.shape
+                if bbox:
+                    vol_mm3 = (
+                        (bbox["x"][1] - bbox["x"][0])
+                        * (bbox["y"][1] - bbox["y"][0])
+                        * (bbox["z"][1] - bbox["z"][0])
+                    ) * solid_frac
                 else:
-                    logger.warning(
-                        f"[VoxelFEM] GPU FEM returned invalid result, falling back to ccx"
-                    )
+                    vol_mm3 = D * H * W * solid_frac
+                mass = vol_mm3 * 7900 / 1e9
+                result = {
+                    "stress": fem_res["stress_max"],
+                    "compliance": fem_res["compliance"],
+                    "mass": mass,
+                }
+                logger.info(
+                    f"[VoxelFEM-GPU] stress={result['stress']:.1f} MPa "
+                    f"compliance={result['compliance']:.4e} mass={result['mass']:.4f}"
+                )
+                self._counter += 1
+                self.evaluation_history.append(result)
+                return result
             except Exception as e:
                 logger.warning(f"[VoxelFEM] GPU FEM failed: {e}, falling back to ccx")
 

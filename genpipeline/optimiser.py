@@ -41,8 +41,10 @@ def run_optimisation(config: PipelineConfig, topo_refine: bool = False, q: int =
     vae_device = next(vae.parameters()).device
     logger.info(f"VAE loaded to device: {vae_device}")
 
-    # Initialize Evaluator and Optimizer
-    evaluator = VoxelFEMEvaluator(vae_model=vae)
+    # Initialize Evaluator and Optimizer — GPU FEM replaces ccx (~8s→<2s per eval)
+    use_gpu_fem = torch.cuda.is_available()
+    logger.info(f"FEM backend: {'GPU (vectorised)' if use_gpu_fem else 'CalculiX'}")
+    evaluator = VoxelFEMEvaluator(vae_model=vae, use_gpu=use_gpu_fem)
     optimizer = DesignOptimizer(
         vae,
         evaluator,
