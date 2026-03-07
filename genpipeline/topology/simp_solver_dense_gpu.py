@@ -260,12 +260,13 @@ class DenseGPUSolver:
             else:
                 self._apply_bc(K, f, fixed_dofs)
 
-            # Solve via cuSPARSE SpMV-based PCG.
-            # On Blackwell sm_120, cuBLAS GEMV and Cholesky are both broken for
-            # concurrent use.  cuSPARSE SpMV (torch.mv on CSR tensors) works fine.
-            # Converting the dense K to CSR first avoids all cuBLAS calls.
+            # Solve via cuSPARSE SpMV-based PCG (avoids broken cuBLAS on Blackwell).
+            # Converting dense K to CSR first; suppress beta-state UserWarning.
             K_reg = K + torch.eye(self.n_dof, device=self.device) * 1e-5
-            K_csr = K_reg.to_sparse_csr()
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                K_csr = K_reg.to_sparse_csr()
             diag = K_reg.diagonal().clamp(min=1e-10)
             u = self._pcg_sparse(K_csr, f, 1.0 / diag)
 
