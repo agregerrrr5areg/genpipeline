@@ -249,7 +249,9 @@ class VoxelHexMesher:
         if ccx_cmd.endswith(".exe"):
             inp_arg = _wsl_to_win(str(work_dir / stem))
         else:
-            inp_arg = str(work_dir / stem)
+            inp_arg = (
+                stem  # cwd=work_dir so just the stem; full path would double-prefix
+            )
 
         cmd = [ccx_cmd, inp_arg]
 
@@ -411,6 +413,7 @@ class VoxelFEMEvaluator:
         load_face: str = "x_max",
         force_n: float = 1000.0,
         vae_model=None,
+        use_gpu: bool = False,
     ):
         self.ccx_cmd = ccx_cmd or find_ccx()
         # Default to a Windows-accessible temp dir when ccx is a Windows .exe,
@@ -426,9 +429,9 @@ class VoxelFEMEvaluator:
         self.load_face = load_face
         self.force_n = force_n
         self.vae_model = vae_model
+        self.use_gpu = use_gpu
         self.evaluation_history = []
         self._counter = 0
-
         if self.ccx_cmd is None:
             logger.warning(
                 "[VoxelFEM] CalculiX not found — evaluations will return penalty values."
@@ -457,6 +460,43 @@ class VoxelFEMEvaluator:
 
         # Organic density filter (matches DesignOptimizer.decode_latent_to_geometry)
         voxels = smooth_voxels(voxels)
+
+        # Try GPU FEM first if enabled
+        if self.use_gpu:
+            try:
+                from genpipeline.fem.gpu_fem_solver import GPUConjugateGradientFEM
+
+                gpu_fem = GPUConjugateGradientFEM(voxel_size_mm=1.0, material="steel")
+                fem_res = gpu_fem.solve(
+                    voxels,
+                    fixed_face=self.fixed_face,
+                    load_face=self.load_face,
+                    force_n=self.force_n,
+                    bbox=bbox,
+                )
+                if is_valid_fem_result({"stress": fem_res["stress_max"]}):
+                    solid_frac = float((voxels > 0.5).mean())
+                    D, H, W = voxels.shape
+                    if bbox:
+                        vol_mm3 = (
+                            (bbox["x"][1] - bbox["x"][0])
+                            * (bbox["y"][1] - bbox["y"][0])
+                            * (bbox["z"][1] - bbox["z"][0])
+                        ) * solid_frac
+                    else:
+                        vol_mm3 = D * H * W * solid_frac
+                    mass = vol_mm3 * 7900 / 1e9
+                    return {
+                        "stress": fem_res["stress_max"],
+                        "compliance": fem_res["compliance"],
+                        "mass": mass,
+                    }
+                else:
+                    logger.warning(
+                        f"[VoxelFEM] GPU FEM returned invalid result, falling back to ccx"
+                    )
+            except Exception as e:
+                logger.warning(f"[VoxelFEM] GPU FEM failed: {e}, falling back to ccx")
 
         self._counter += 1
         inp_path = str(self.output_dir / f"voxel_fem_{self._counter:04d}.inp")

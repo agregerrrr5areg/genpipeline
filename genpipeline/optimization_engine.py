@@ -8,7 +8,13 @@ import concurrent.futures
 
 from . import freecad_bridge
 from .blackwell_compat import botorch_device
-from .pipeline_utils import NumpyEncoder as _NumpyEncoder, smooth_voxels, FEM_SENTINEL, FEM_VALID_THRESHOLD, is_valid_fem_result
+from .pipeline_utils import (
+    NumpyEncoder as _NumpyEncoder,
+    smooth_voxels,
+    FEM_SENTINEL,
+    FEM_VALID_THRESHOLD,
+    is_valid_fem_result,
+)
 from .schema import DesignParameters, FEMResult, OptimizationSample
 
 logging.basicConfig(level=logging.INFO)
@@ -20,24 +26,35 @@ try:
     from botorch.fit import fit_gpytorch_mll
     from gpytorch.mlls import ExactMarginalLogLikelihood
     from botorch.optim import optimize_acqf
-    from botorch.acquisition.multi_objective import qLogExpectedHypervolumeImprovement as qExpectedHypervolumeImprovement
+    from botorch.acquisition.multi_objective import (
+        qLogExpectedHypervolumeImprovement as qExpectedHypervolumeImprovement,
+    )
     from botorch.utils.multi_objective.pareto import is_non_dominated
     from botorch.utils.multi_objective.hypervolume import NondominatedPartitioning
+
     BOTORCH_AVAILABLE = True
 except ImportError as e:
     BOTORCH_AVAILABLE = False
-    logger.warning(f"BoTorch not available: {e}. Multi-objective discovery will fallback to random search.")
+    logger.warning(
+        f"BoTorch not available: {e}. Multi-objective discovery will fallback to random search."
+    )
 
 
 class BridgeEvaluator:
     """Evaluates designs using the FreeCAD bridge (WSL2 -> Windows)."""
-    def __init__(self, freecad_path: str = None, output_dir: str = "./optimisation_results/fem", n_workers: int = 4):
+
+    def __init__(
+        self,
+        freecad_path: str = None,
+        output_dir: str = "./optimisation_results/fem",
+        n_workers: int = 4,
+    ):
         try:
             self.freecad_cmd = freecad_bridge.find_freecad_cmd(freecad_path)
         except Exception as e:
             logger.error(f"Could not find FreeCAD: {e}")
             self.freecad_cmd = None
-        
+
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.variant_win = freecad_bridge.deploy_variant_script()
@@ -47,22 +64,36 @@ class BridgeEvaluator:
     def evaluate_batch(self, parameter_list: List[DesignParameters]) -> List[FEMResult]:
         """Evaluates multiple designs in parallel via the FreeCAD bridge."""
         if not self.freecad_cmd:
-            return [FEMResult(stress_max=1e6, compliance=1e6, mass=1.0, success=False)] * len(parameter_list)
+            return [
+                FEMResult(stress_max=1e6, compliance=1e6, mass=1.0, success=False)
+            ] * len(parameter_list)
 
         results_out = [None] * len(parameter_list)
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.n_workers
+        ) as executor:
             future_to_idx = {}
             for idx, params in enumerate(parameter_list):
                 # Dimension guard: cantilever needs 5mm wall thickness after hole
-                if params.geometry_type == "cantilever" and params.h_mm - (2 * params.r_mm) < 4.9:
-                    results_out[idx] = FEMResult(stress_max=1e6, compliance=1e6, mass=1.0, success=False)
+                if (
+                    params.geometry_type == "cantilever"
+                    and params.h_mm - (2 * params.r_mm) < 4.9
+                ):
+                    results_out[idx] = FEMResult(
+                        stress_max=1e6, compliance=1e6, mass=1.0, success=False
+                    )
                     continue
 
                 future = executor.submit(
                     freecad_bridge.run_variant,
-                    self.freecad_cmd, params.h_mm, params.r_mm, str(self.output_dir), 
-                    self.variant_win, geometry=params.geometry_type, material_cfg=params.material_cfg
+                    self.freecad_cmd,
+                    params.h_mm,
+                    params.r_mm,
+                    str(self.output_dir),
+                    self.variant_win,
+                    geometry=params.geometry_type,
+                    material_cfg=params.material_cfg,
                 )
                 future_to_idx[future] = idx
 
@@ -76,38 +107,68 @@ class BridgeEvaluator:
                             stress_mean=float(res.get("stress_mean", 0.0)),
                             compliance=float(res.get("compliance", 1e6)),
                             mass=float(res.get("mass", 1.0)),
-                            bbox=res.get("bbox")
+                            bbox=res.get("bbox"),
                         )
                         results_out[idx] = eval_res
-                        self.evaluation_history.append(OptimizationSample(
-                            parameters=parameter_list[idx],
-                            result=eval_res
-                        ))
+                        self.evaluation_history.append(
+                            OptimizationSample(
+                                parameters=parameter_list[idx], result=eval_res
+                            )
+                        )
                     else:
-                        results_out[idx] = FEMResult(stress_max=1e6, compliance=1e6, mass=1.0, success=False)
+                        results_out[idx] = FEMResult(
+                            stress_max=1e6, compliance=1e6, mass=1.0, success=False
+                        )
                 except Exception as e:
                     logger.error(f"Batch evaluation failed for index {idx}: {e}")
-                    results_out[idx] = FEMResult(stress_max=1e6, compliance=1e6, mass=1.0, success=False)
+                    results_out[idx] = FEMResult(
+                        stress_max=1e6, compliance=1e6, mass=1.0, success=False
+                    )
 
         return results_out
 
     def save_history(self, path: str):
-        with open(path, 'w') as f:
+        with open(path, "w") as f:
             json.dump(self.evaluation_history, f, indent=2, cls=_NumpyEncoder)
 
 
 # Per-geometry parameter bounds: h_mm and r_mm semantics vary by geometry type.
 # These clamp the parameter_head output to physically valid ranges.
 GEOM_SPACES = {
-    "cantilever": {"h_min": 5.0,  "h_max": 20.0, "r_min": 0.0, "r_max": 5.0},
-    "tapered":    {"h_min": 8.0,  "h_max": 25.0, "r_min": 2.0, "r_max": 7.0},
-    "ribbed":     {"h_min": 6.0,  "h_max": 20.0, "r_min": 2.0, "r_max": 6.0},
-    "lbracket":   {"h_min": 8.0,  "h_max": 25.0, "r_min": 5.0, "r_max": 20.0},
+    "cantilever": {"h_min": 5.0, "h_max": 20.0, "r_min": 0.0, "r_max": 5.0},
+    "tapered": {"h_min": 8.0, "h_max": 25.0, "r_min": 2.0, "r_max": 7.0},
+    "ribbed": {"h_min": 6.0, "h_max": 20.0, "r_min": 2.0, "r_max": 6.0},
+    "lbracket": {"h_min": 8.0, "h_max": 25.0, "r_min": 5.0, "r_max": 20.0},
+    "branch": {"h_min": 10.0, "h_max": 30.0, "r_min": 3.0, "r_max": 10.0},
+    "y_tree": {"h_min": 12.0, "h_max": 35.0, "r_min": 5.0, "r_max": 15.0},
+    "network": {"h_min": 8.0, "h_max": 25.0, "r_min": 2.0, "r_max": 8.0},
 }
 
 
 class DesignOptimizer:
-    def __init__(self, vae_model, fem_evaluator, device='cuda', latent_dim=32, sim_cfg=None, topo_refine=False, n_workers=4):
+    def __init__(
+        self,
+        vae_model,
+        fem_evaluator,
+        device="cuda",
+        latent_dim=32,
+        sim_cfg=None,
+        topo_refine=False,
+        n_workers=4,
+        max_vram_gb=10,  # Limit VRAM usage to prevent system lag
+    ):
+        # Limit VRAM usage to prevent system lag
+        if device == "cuda":
+            import torch
+
+            try:
+                # Set memory allocator to limit GPU memory
+                torch.cuda.set_per_process_memory_fraction(
+                    max_vram_gb / torch.cuda.get_device_properties(0).total_memory * 1e9
+                )
+            except:
+                pass  # Ignore if can't set limit
+
         self.vae = vae_model
         self.fem_evaluator = fem_evaluator
         self.device = device
@@ -115,17 +176,48 @@ class DesignOptimizer:
         self.sim_cfg = sim_cfg or {"w_stress": 1.0, "w_compliance": 0.1, "w_mass": 0.01}
         self.topo_refine = topo_refine
         self.n_workers = n_workers
-        if hasattr(fem_evaluator, 'n_workers'):
+        if hasattr(fem_evaluator, "n_workers"):
             self.n_workers = fem_evaluator.n_workers
         self.vae.eval()
+
+        # Blackwell-optimized: compile decoder for faster inference
+        # Use reduce-overhead mode for Blackwell, default for other GPUs
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                device_name = torch.cuda.get_device_name(0)
+                is_blackwell = "Blackwell" in device_name or "RTX 50" in device_name
+
+                if is_blackwell:
+                    # Blackwell: use max_autotune for better kernel fusion
+                    self._decode_compiled = torch.compile(
+                        self.vae.decode, mode="max_autotune", fullgraph=True
+                    )
+                    logger.info(f"Compiled VAE decode for Blackwell ({device_name})")
+                else:
+                    # Other GPUs: use reduce-overhead
+                    self._decode_compiled = torch.compile(
+                        self.vae.decode, mode="reduce-overhead", fullgraph=True
+                    )
+                    logger.info(f"Compiled VAE decode for {device_name}")
+            else:
+                self._decode_compiled = self.vae.decode
+                logger.info("CPU mode: using uncompiled decode")
+        except Exception as e:
+            logger.warning(f"torch.compile failed, using uncompiled: {e}")
+            self._decode_compiled = self.vae.decode
 
         # Load materials DB once
         try:
             import yaml
+
             with open("materials.yaml") as f:
                 self.materials_db = yaml.safe_load(f)
         except (FileNotFoundError, ImportError):
-            self.materials_db = {"Plastic_ABS": {"E_mpa": 2300, "poisson": 0.35, "density": 1050}}
+            self.materials_db = {
+                "Plastic_ABS": {"E_mpa": 2300, "poisson": 0.35, "density": 1050}
+            }
 
         self.gp_model = None
         self.x_history = []
@@ -133,16 +225,39 @@ class DesignOptimizer:
         self.y_history = []
         self.best_bbox = None
 
+    def batch_decode(self, z_batch: torch.Tensor) -> torch.Tensor:
+        """
+        Decode a batch of latent vectors efficiently.
+        Uses compiled decoder when available.
+
+        Args:
+            z_batch: Tensor of shape (batch_size, latent_dim)
+        Returns:
+            Tensor of shape (batch_size, 1, 64, 64, 64)
+        """
+        if not hasattr(self, "_decode_compiled"):
+            self._decode_compiled = self.vae.decode
+
+        with torch.no_grad():
+            # Ensure on correct device
+            if z_batch.device != self.device:
+                z_batch = z_batch.to(self.device)
+
+            # Use compiled decode
+            voxels = self._decode_compiled(z_batch)
+
+        return voxels
+
     def geometry_to_parameters(self, z: np.ndarray) -> DesignParameters:
         with torch.no_grad():
             z_tensor = torch.from_numpy(z).float().to(self.device).view(1, -1)
             params = self.vae.predict_parameters(z_tensor)
             params = params.cpu().numpy()[0]
-        
+
         return DesignParameters(
             h_mm=float(params[0]),
             r_mm=float(params[1]),
-            geometry_type=self.sim_cfg.get("geometry_type", "cantilever")
+            geometry_type=self.sim_cfg.get("geometry_type", "cantilever"),
         )
 
     def optimize_step_parallel(self, q=4):
@@ -156,28 +271,32 @@ class DesignOptimizer:
         if not BOTORCH_AVAILABLE or n_valid < 10:
             z_batch = np.random.randn(q, self.latent_dim) * 2.0
             return self._evaluate_latent_batch(z_batch)
-        
+
         # Add safety margin for numerical stability
-        train_X_raw = torch.tensor(np.array([x for x, ok in zip(self.x_history, valid_mask) if ok]),
-                                   dtype=torch.float64).to(botorch_device)
-        train_Y = torch.tensor(np.array([y for y, ok in zip(self.y_history, valid_mask) if ok]),
-                               dtype=torch.float64).to(botorch_device)
-        
+        train_X_raw = torch.tensor(
+            np.array([x for x, ok in zip(self.x_history, valid_mask) if ok]),
+            dtype=torch.float64,
+        ).to(botorch_device)
+        train_Y = torch.tensor(
+            np.array([y for y, ok in zip(self.y_history, valid_mask) if ok]),
+            dtype=torch.float64,
+        ).to(botorch_device)
+
         # Normalize inputs to [0,1] cube for BoTorch
         X_min = train_X_raw.min(dim=0).values
         X_max = train_X_raw.max(dim=0).values
         X_range = (X_max - X_min).clamp(min=1e-6)
         train_X = (train_X_raw - X_min) / X_range
-        
+
         # Standardize outputs for better convergence
         train_Y_std = (train_Y - train_Y.mean(dim=0)) / (train_Y.std(dim=0) + 1e-6)
         train_Y_std = -train_Y_std  # Invert for maximization
-        
+
         self.gp_model = SingleTaskGP(train_X, train_Y_std)
         self._X_min, self._X_range = X_min, X_range  # Store for candidate rescaling
         mll = ExactMarginalLogLikelihood(self.gp_model.likelihood, self.gp_model)
         fit_gpytorch_mll(mll)
-        
+
         # Use more conservative reference point for hypervolume improvement
         ref_point = train_Y_std.min(dim=0).values - 0.1
         partitioning = NondominatedPartitioning(ref_point=ref_point, Y=train_Y_std)
@@ -186,25 +305,33 @@ class DesignOptimizer:
             ref_point=ref_point,
             partitioning=partitioning,
         )
-        
+
         # Bounds in normalized [0,1] space
         bounds = torch.zeros(2, self.latent_dim, dtype=torch.float64).to(botorch_device)
         bounds[1] = 1.0
-        
+
         candidates, _ = optimize_acqf(
-            acq, bounds=bounds, q=q, num_restarts=10, raw_samples=512,
+            acq,
+            bounds=bounds,
+            q=q,
+            num_restarts=10,
+            raw_samples=512,
         )
-        
+
         # Rescale candidates back to original latent space
         candidates = candidates * self._X_range + self._X_min
-        
+
         return self._evaluate_latent_batch(candidates.cpu().numpy())
 
         # Fit multi-output GP on CPU (Search space is latent_dim only)
         valid_x = [x for x, ok in zip(self.x_history, valid_mask) if ok]
         valid_y = [y for y, ok in zip(self.y_history, valid_mask) if ok]
-        train_X_raw = torch.tensor(np.array(valid_x), dtype=torch.float64).to(botorch_device)
-        train_Y = torch.tensor(np.array(valid_y), dtype=torch.float64).to(botorch_device)
+        train_X_raw = torch.tensor(np.array(valid_x), dtype=torch.float64).to(
+            botorch_device
+        )
+        train_Y = torch.tensor(np.array(valid_y), dtype=torch.float64).to(
+            botorch_device
+        )
 
         # Normalise X to [0,1] — botorch GP expects unit-cube inputs
         X_min = train_X_raw.min(dim=0).values
@@ -233,7 +360,11 @@ class DesignOptimizer:
         bounds[1] = 1.0
 
         candidates, _ = optimize_acqf(
-            acq, bounds=bounds, q=q, num_restarts=10, raw_samples=512,
+            acq,
+            bounds=bounds,
+            q=q,
+            num_restarts=10,
+            raw_samples=512,
         )
 
         # Rescale candidates back to original latent space
@@ -244,30 +375,33 @@ class DesignOptimizer:
     def _build_preserved_mask(self, regions: list, resolution: int = 64) -> np.ndarray:
         if not regions:
             return None
-        
+
         mask = np.zeros((resolution, resolution, resolution), dtype=bool)
-        
+
         # Physical dimensions (baseline)
         lx, ly, lz = 100.0, 20.0, 20.0
         geom = self.sim_cfg.get("geometry_type", "cantilever")
         if geom == "lbracket":
             lz = 100.0
-            
+
         dx = lx / resolution
-        dy = ly / resolution # Note: ny is res/4 in refinement loop, we need to be careful
+        dy = (
+            ly / resolution
+        )  # Note: ny is res/4 in refinement loop, we need to be careful
         # Actually, refinement loop uses res x res/4 x res/4
         # But here we are building a mask for that grid.
         # Let's assume the refinement grid matches the VAE grid shape logic roughly
         # VAE is 64^3 cubic. SIMP refinement uses (64, 16, 16).
         # We need to map physical coordinates to the (64, 16, 16) indices.
-        
+
         nx, ny, nz = resolution, resolution // 4, resolution // 4
-        if geom == "lbracket": nz = resolution # L-bracket is tall
-        
+        if geom == "lbracket":
+            nz = resolution  # L-bracket is tall
+
         dx = lx / nx
         dy = ly / ny
         dz = lz / nz
-        
+
         mask = np.zeros((nx, ny, nz), dtype=bool)
 
         for r in regions:
@@ -278,94 +412,124 @@ class DesignOptimizer:
             y1 = int(np.clip(r["ymax"] / dy, 0, ny))
             z0 = int(np.clip(r["zmin"] / dz, 0, nz))
             z1 = int(np.clip(r["zmax"] / dz, 0, nz))
-            
+
             mask[x0:x1, y0:y1, z0:z1] = True
-            
+
         return mask
 
     def _evaluate_latent_batch(self, z_batch):
         # z_batch contains [z_0...z_31]
-        
-        # ── Fix Task 5: Topology Refinement ─────────────────────────────────────
-        if self.topo_refine:
-            logger.info(f"  Refining batch of {len(z_batch)} designs via SIMP (5 iters, 32^3)...")
-            from genpipeline.topology.solver import TopologySolver
+
+        # ── Topology Refinement ────────────────────────────────────────────────
+        # Disabled: causes CUDA context conflicts with VAE in multithreaded environment
+        # Can re-enable if using sequential processing or separate GPU
+        if False and self.topo_refine:
+            logger.info(
+                f"  Refining batch of {len(z_batch)} designs via SIMP (5 iters, 32^3)..."
+            )
+            from genpipeline.topology.simp_solver import SIMPSolver
+
             geom_type = self.sim_cfg.get("geometry_type", "cantilever")
-            
+
             # Use 32^3 for refinement for speed (Training is 64, but 32 is enough for BO guidance)
-            res = 32 
+            res = 32
             # Aspect ratio logic matches SIMP defaults
-            ny_ref = res//4
-            nz_ref = res//4
-            if geom_type == "lbracket": nz_ref = res
-            
+            ny_ref = res // 4
+            nz_ref = res // 4
+            if geom_type == "lbracket":
+                nz_ref = res
+
             # Build mask once if static
             preserved_mask = None
             if self.sim_cfg.get("preserved_regions"):
-                preserved_mask = self._build_preserved_mask(self.sim_cfg["preserved_regions"], resolution=res)
-            
+                preserved_mask = self._build_preserved_mask(
+                    self.sim_cfg["preserved_regions"], resolution=res
+                )
+
             refined_zs = [None] * len(z_batch)
-            
-            def refine_single(idx, z_vec, stream):
+
+            # ── Batch decode all designs at once on GPU ──
+            z_all = torch.from_numpy(np.array(z_batch)).float().to(self.device)
+            with torch.no_grad():
+                voxels_all = (
+                    self._decode_compiled(z_all).squeeze().cpu().numpy()
+                )  # (q, 64, 64, 64)
+
+            def refine_single(idx, z_vec, voxels_64, stream):
                 from scipy.ndimage import zoom
+
                 # Use dedicated CUDA stream for this worker
                 with torch.cuda.stream(stream):
-                    # 1. Decode at higher resolution (VAE native 64^3)
-                    # Pinned memory for z_vec transfer
-                    z_t = torch.from_numpy(z_vec).float().pin_memory().to(self.device, non_blocking=True).unsqueeze(0)
-                    with torch.no_grad():
-                        voxels_64 = self.vae.decode(z_t).squeeze().cpu().numpy()
-                    
                     # Downsample 64 -> 32 for SIMP speed
                     voxels_32 = zoom(voxels_64, 0.5, order=1)
-                    
+
                     # 2. Refine (SIMP initialized from decoded density)
                     sim_cfg_local = {
                         "force_n": self.sim_cfg.get("force_n", 1000.0),
                         "boundary_conditions": {
-                            "fixed_face": "x_min" if geom_type != "lbracket" else "z_min",
+                            "fixed_face": "x_min"
+                            if geom_type != "lbracket"
+                            else "z_min",
                             "load_face": "x_max",
-                            "load_dof": 2
+                            "load_dof": 2,
                         },
-                        "preserved_mask": preserved_mask
+                        "preserved_mask": preserved_mask,
                     }
                     refine_dir = Path("./optimisation_results/refine_tmp")
                     refine_dir.mkdir(parents=True, exist_ok=True)
-                    
+
                     # Extract initial guess for SIMP (matching its grid shape)
                     nx_s, ny_s, nz_s = res, ny_ref, nz_ref
                     x_init = voxels_32[:nx_s, :ny_s, :nz_s]
-                    
-                    # Run solver (SIMP-GPU) with Warm Start and only 5 iters
-                    solver_local = TopologySolver(nx=res, ny=ny_ref, nz=nz_ref, n_iters=5)
-                    # Ensure SIMPSolverGPU uses the worker's stream if we update its internal calls
-                    solver_local.run(sim_cfg_local, str(refine_dir), volfrac=0.4, export_stl=False, x_init=x_init)
-                    refined_density = solver_local.last_density
-                    
+
+                    # Run solver (SIMP-CPU) with Warm Start and only 5 iters
+                    # Use CPU to avoid CUDA context conflicts with VAE
+                    solver_local = SIMPSolver(nx=res, ny=ny_ref, nz=nz_ref)
+                    refined_density = solver_local.run(
+                        volfrac=0.4,
+                        n_iters=5,
+                        force_mag=1000.0,
+                    )
+
                     # 3. Re-encode (Must be 64^3 for VAE)
                     # Upsample 32 -> 64
                     refined_64 = zoom(refined_density, 2.0, order=1)
-                    
+
                     padded = np.zeros((64, 64, 64), dtype=np.float32)
                     nx, ny, nz = refined_64.shape
                     padded[:nx, :ny, :nz] = refined_64
-                    
-                    vox_t = torch.from_numpy(padded).float().pin_memory().to(self.device, non_blocking=True).view(1, 1, 64, 64, 64)
+
+                    vox_t = (
+                        torch.from_numpy(padded)
+                        .float()
+                        .pin_memory()
+                        .to(self.device, non_blocking=True)
+                        .view(1, 1, 64, 64, 64)
+                    )
                     with torch.no_grad():
                         mu, _ = self.vae.encode(vox_t)
                         return mu.cpu().numpy().squeeze()
 
             import concurrent.futures
+
             # Create a pool of CUDA streams, one per worker
-            streams = [torch.cuda.Stream(device=self.device) for _ in range(self.n_workers)]
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=self.n_workers) as executor:
-                future_to_idx = {executor.submit(refine_single, i, z, streams[i % self.n_workers]): i 
-                                 for i, z in enumerate(z_batch)}
+            streams = [
+                torch.cuda.Stream(device=self.device) for _ in range(self.n_workers)
+            ]
+
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.n_workers
+            ) as executor:
+                future_to_idx = {
+                    executor.submit(
+                        refine_single, i, z, voxels_all[i], streams[i % self.n_workers]
+                    ): i
+                    for i, z in enumerate(z_batch)
+                }
                 for future in concurrent.futures.as_completed(future_to_idx):
                     idx = future_to_idx[future]
                     refined_zs[idx] = future.result()
-            
+
             # Sync all streams before continuing
             torch.cuda.synchronize(self.device)
             z_batch = np.array(refined_zs)
@@ -377,7 +541,9 @@ class DesignOptimizer:
             param_list.append(p)
 
         geom = self.sim_cfg.get("geometry_type", "cantilever")
-        bounds = GEOM_SPACES.get(geom, GEOM_SPACES["cantilever"])
+        bounds = GEOM_SPACES.get(
+            geom, {"h_min": 8.0, "h_max": 25.0, "r_min": 2.0, "r_max": 10.0}
+        )
 
         for i, p in enumerate(param_list):
             # Clamp h_mm and r_mm to per-geometry valid ranges
@@ -394,7 +560,7 @@ class DesignOptimizer:
             p.material_cfg = self.materials_db[p.material_name]
 
         results = self.fem_evaluator.evaluate_batch(param_list)
-        
+
         stress_limit = self.sim_cfg.get("max_stress_mpa", 1e9)
         for i, res in enumerate(results):
             self.x_history.append(z_batch[i])
@@ -405,18 +571,24 @@ class DesignOptimizer:
                 continue
 
             penalty = 5e5 if res.stress_max > stress_limit else 0.0
-            obj = (self.sim_cfg["w_stress"] * res.stress_max +
-                   self.sim_cfg["w_mass"] * res.mass +
-                   penalty)
+            obj = (
+                self.sim_cfg["w_stress"] * res.stress_max
+                + self.sim_cfg["w_mass"] * res.mass
+                + penalty
+            )
 
             valid_scores = [
-                self.sim_cfg["w_stress"] * y[0] + self.sim_cfg["w_mass"] * y[1] +
-                (5e5 if y[0] > stress_limit else 0.0)
-                for y in self.y_history if 0.0 < y[0] < 1e5
+                self.sim_cfg["w_stress"] * y[0]
+                + self.sim_cfg["w_mass"] * y[1]
+                + (5e5 if y[0] > stress_limit else 0.0)
+                for y in self.y_history
+                if 0.0 < y[0] < 1e5
             ]
             if obj <= min(valid_scores):
                 self.best_bbox = res.bbox
-                logger.info(f"  New Best: Stress={res.stress_max:.1f}MPa (limit={stress_limit}), Mass={res.mass:.4f}kg")
+                logger.info(
+                    f"  New Best: Stress={res.stress_max:.1f}MPa (limit={stress_limit}), Mass={res.mass:.4f}kg"
+                )
 
         return z_batch, results
 
@@ -446,8 +618,9 @@ class DesignOptimizer:
             logger.info(f"Resumed from checkpoint: {n} evaluations restored.")
         return n
 
-    def run_optimisation(self, n_iterations=250, q=4, output_dir: str = None,
-                         checkpoint_every: int = 10):
+    def run_optimisation(
+        self, n_iterations=250, q=4, output_dir: str = None, checkpoint_every: int = 10
+    ):
         logger.info(f"Starting Multi-Objective Parallel Discovery (q={q})...")
         for i in range(n_iterations):
             self.optimize_step_parallel(q=q)
@@ -456,19 +629,27 @@ class DesignOptimizer:
                 n_pareto = is_non_dominated(-torch.tensor(valid)).sum().item()
             else:
                 n_pareto = 0
-            logger.info(f"Round {i+1}/{n_iterations} complete. Valid={len(valid)}  Pareto={n_pareto}")
+            logger.info(
+                f"Round {i + 1}/{n_iterations} complete. Valid={len(valid)}  Pareto={n_pareto}"
+            )
             if output_dir and (i + 1) % checkpoint_every == 0:
                 self.save_checkpoint(output_dir)
 
         # Find best non-failed design
         valid_indices = [i for i, y in enumerate(self.y_history) if 0.0 < y[0] < 1e5]
         if not valid_indices:
-            logger.warning("All evaluations failed (stress=1e6). Check FreeCAD/FEM setup.")
+            logger.warning(
+                "All evaluations failed (stress=1e6). Check FreeCAD/FEM setup."
+            )
             return np.zeros(self.latent_dim), [1e6, 1.0]
 
-        best_z_idx = min(valid_indices,
-                         key=lambda i: (self.sim_cfg["w_stress"] * self.y_history[i][0]
-                                        + self.sim_cfg["w_mass"]  * self.y_history[i][1]))
+        best_z_idx = min(
+            valid_indices,
+            key=lambda i: (
+                self.sim_cfg["w_stress"] * self.y_history[i][0]
+                + self.sim_cfg["w_mass"] * self.y_history[i][1]
+            ),
+        )
         return self.x_history[best_z_idx], self.y_history[best_z_idx]
 
     def save_results(self, output_dir: str = "./optimisation_results"):
@@ -479,19 +660,27 @@ class DesignOptimizer:
         valid_idx = [i for i, y in enumerate(self.y_history) if 0.0 < y[0] < 1e5]
         if not valid_idx:
             logger.warning("No valid evaluations to save.")
-            json.dump({"pareto_front": [], "history_y": [], "best_bbox": None},
-                      open(out_path / "optimisation_history.json", "w"))
+            json.dump(
+                {"pareto_front": [], "history_y": [], "best_bbox": None},
+                open(out_path / "optimisation_history.json", "w"),
+            )
             return
 
-        y_valid = torch.tensor([self.y_history[i] for i in valid_idx], dtype=torch.float64)
+        y_valid = torch.tensor(
+            [self.y_history[i] for i in valid_idx], dtype=torch.float64
+        )
         pareto_mask = is_non_dominated(-y_valid)
         pareto_indices = [valid_idx[i] for i in torch.where(pareto_mask)[0].tolist()]
         pareto_front = [
             {
                 "stress": self.y_history[idx][0],
                 "mass": self.y_history[idx][1],
-                "params": self.fem_evaluator.evaluation_history[idx].parameters.model_dump() if idx < len(self.fem_evaluator.evaluation_history) else {},
-                "latent_z": self.x_history[idx].tolist()
+                "params": self.fem_evaluator.evaluation_history[
+                    idx
+                ].parameters.model_dump()
+                if idx < len(self.fem_evaluator.evaluation_history)
+                else {},
+                "latent_z": self.x_history[idx].tolist(),
             }
             for idx in pareto_indices
         ]
@@ -499,12 +688,14 @@ class DesignOptimizer:
         results = {
             "pareto_front": pareto_front,
             "history_y": [list(y) for y in self.y_history],
-            "best_bbox": self.best_bbox
+            "best_bbox": self.best_bbox,
         }
-        with open(out_path / "optimisation_history.json", 'w') as f:
+        with open(out_path / "optimisation_history.json", "w") as f:
             json.dump(results, f, indent=2, cls=_NumpyEncoder)
         self.fem_evaluator.save_history(out_path / "fem_evaluations.json")
-        logger.info(f"MOBO Results Saved. {len(pareto_front)} Pareto-optimal designs identified.")
+        logger.info(
+            f"MOBO Results Saved. {len(pareto_front)} Pareto-optimal designs identified."
+        )
 
 
 if __name__ == "__main__":
@@ -513,17 +704,30 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-checkpoint", type=str, required=True)
-    parser.add_argument("--n-iter",      type=int,  default=250)
-    parser.add_argument("--q",           type=int,  default=4)
-    parser.add_argument("--output-dir",  type=str,  default="./optimisation_results")
-    parser.add_argument("--config-path", type=str,  default=None,
-                        help="Path to gendesign_config.json exported by the FreeCAD workbench")
-    parser.add_argument("--voxel-fem", action="store_true",
-                        help="Use direct CalculiX voxel FEM (bypasses FreeCAD)")
-    parser.add_argument("--topo-refine", action="store_true",
-                        help="Perform topology refinement (20 SIMP iters) before evaluation")
-    parser.add_argument("--resume", action="store_true",
-                        help="Resume from bo_checkpoint.json in --output-dir")
+    parser.add_argument("--n-iter", type=int, default=250)
+    parser.add_argument("--q", type=int, default=4)
+    parser.add_argument("--output-dir", type=str, default="./optimisation_results")
+    parser.add_argument(
+        "--config-path",
+        type=str,
+        default=None,
+        help="Path to gendesign_config.json exported by the FreeCAD workbench",
+    )
+    parser.add_argument(
+        "--voxel-fem",
+        action="store_true",
+        help="Use direct CalculiX voxel FEM (bypasses FreeCAD)",
+    )
+    parser.add_argument(
+        "--topo-refine",
+        action="store_true",
+        help="Perform topology refinement (20 SIMP iters) before evaluation",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from bo_checkpoint.json in --output-dir",
+    )
     args = parser.parse_args()
 
     # Load workbench config if provided (overrides CLI defaults)
@@ -532,35 +736,39 @@ if __name__ == "__main__":
         with open(args.config_path) as f:
             wb_cfg = json.load(f)
         logger.info(f"Loaded workbench config from {args.config_path}")
-        logger.info(f"  geometry={wb_cfg.get('geometry_type')}  "
-                    f"n_iter={wb_cfg.get('n_iter')}  "
-                    f"constraints={len(wb_cfg.get('constraints', []))}  "
-                    f"loads={len(wb_cfg.get('loads', []))}")
+        logger.info(
+            f"  geometry={wb_cfg.get('geometry_type')}  "
+            f"n_iter={wb_cfg.get('n_iter')}  "
+            f"constraints={len(wb_cfg.get('constraints', []))}  "
+            f"loads={len(wb_cfg.get('loads', []))}"
+        )
 
     n_iter = wb_cfg.get("n_iter", args.n_iter)
-    ckpt   = wb_cfg.get("checkpoint_path", args.model_checkpoint)
+    ckpt = wb_cfg.get("checkpoint_path", args.model_checkpoint)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     vae = DesignVAE(input_shape=(64, 64, 64), latent_dim=32).to(device)
     checkpoint = torch.load(ckpt, map_location=device, weights_only=False)
-    vae.load_state_dict(checkpoint['model_state_dict'])
+    vae.load_state_dict(checkpoint["model_state_dict"])
 
     sim_cfg = {
-        "w_stress":     1.0,
+        "w_stress": 1.0,
         "w_compliance": 0.1,
-        "w_mass":       0.01,
+        "w_mass": 0.01,
         "geometry_type": wb_cfg.get("geometry_type", "cantilever"),
         "max_stress_mpa": wb_cfg.get("max_stress_mpa", 250.0),
         # Pass through any BC overrides from workbench
         "fixed_face_normal": wb_cfg.get("fixed_face_normal", [-1, 0, 0]),
-        "load_face_normal":  wb_cfg.get("load_face_normal",  [1, 0, 0]),
-        "force_n":           wb_cfg.get("force_n", 1000.0),
-        "force_direction":   wb_cfg.get("force_direction", [0, 0, -1]),
+        "load_face_normal": wb_cfg.get("load_face_normal", [1, 0, 0]),
+        "force_n": wb_cfg.get("force_n", 1000.0),
+        "force_direction": wb_cfg.get("force_direction", [0, 0, -1]),
         "preserved_regions": wb_cfg.get("preserved_regions", []),
     }
 
-    if args.voxel_fem:
+    voxel_fem = getattr(args, "voxel_fem", True)  # Default to True
+    if voxel_fem:
         from .fem.voxel_fem import VoxelFEMEvaluator
+
         evaluator = VoxelFEMEvaluator(
             # output_dir=None lets VoxelFEMEvaluator auto-select a
             # Windows-accessible temp when ccx is a .exe binary.
@@ -568,23 +776,31 @@ if __name__ == "__main__":
             load_face=sim_cfg.get("load_face", "x_max"),
             force_n=sim_cfg.get("force_n", 1000.0),
             vae_model=vae,
+            use_gpu=True,  # Use GPU FEM for faster evaluation
         )
     else:
         evaluator = BridgeEvaluator(n_workers=args.q, output_dir=args.output_dir)
-    optimizer = DesignOptimizer(vae, evaluator, latent_dim=32, sim_cfg=sim_cfg, topo_refine=args.topo_refine)
+    optimizer = DesignOptimizer(
+        vae, evaluator, latent_dim=32, sim_cfg=sim_cfg, topo_refine=args.topo_refine
+    )
 
     if args.resume:
         optimizer.load_checkpoint(args.output_dir)
 
-    optimizer.run_optimisation(n_iterations=n_iter, q=args.q,
-                               output_dir=args.output_dir)
+    optimizer.run_optimisation(
+        n_iterations=n_iter, q=args.q, output_dir=args.output_dir
+    )
     optimizer.save_results(args.output_dir)
 
     # Auto-export Pareto STLs
     try:
-        from genpipeline.pipeline_utils import VoxelConverter, ManufacturabilityConstraints
+        from genpipeline.pipeline_utils import (
+            VoxelConverter,
+            ManufacturabilityConstraints,
+        )
         import trimesh as _trimesh
         from pathlib import Path as _Path
+
         hist_path = _Path(args.output_dir) / "optimisation_history.json"
         with open(hist_path) as f:
             hist = json.load(f)
@@ -595,16 +811,17 @@ if __name__ == "__main__":
             mfg = ManufacturabilityConstraints(config={})
             designs = {
                 "strongest": min(pareto, key=lambda x: x["stress"]),
-                "lightest":  min(pareto, key=lambda x: x["mass"]),
-                "balanced":  min(pareto, key=lambda x: x["stress"] + 100 * x["mass"]),
+                "lightest": min(pareto, key=lambda x: x["mass"]),
+                "balanced": min(pareto, key=lambda x: x["stress"] + 100 * x["mass"]),
             }
             for name, d in designs.items():
                 z = torch.tensor(d["latent_z"]).float().unsqueeze(0).to(device)
                 with torch.no_grad():
-                    voxels = vae.decode(z).squeeze().cpu().numpy()
-                voxels = mfg.apply_constraints(voxels, voxel_size=1.0/64)
-                mesh = VoxelConverter.voxel_to_mesh(voxels, voxel_size=1.0/64,
-                                                    bbox=hist.get("best_bbox"))
+                    voxels = optimizer.batch_decode(z).squeeze().cpu().numpy()
+                voxels = mfg.apply_constraints(voxels, voxel_size=1.0 / 64)
+                mesh = VoxelConverter.voxel_to_mesh(
+                    voxels, voxel_size=1.0 / 64, bbox=hist.get("best_bbox")
+                )
                 if mesh:
                     m = _trimesh.Trimesh(vertices=mesh["vertices"], faces=mesh["faces"])
                     m.export(str(export_dir / f"pareto_{name}.stl"))

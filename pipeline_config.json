@@ -1,6 +1,6 @@
 {
   "designs_dir": "/home/genpipeline/eval_results/samples",
-  "fem_data_output": "./fem_data",
+  "fem_data_output": "/home/genpipeline/fem/data",
   "voxel_resolution": 64,
   "use_sdf": false,
   "latent_dim": 32,

@@ -171,9 +171,9 @@ class TopoDataGenerator:
             return nx, ny, nz
         elif self.grid_size == "medium":
             if geom in ("lbracket", "bridge", "arch", "center"):
-                nx = np.random.randint(20, 28)
-                ny = np.random.randint(8, 12)
-                nz = np.random.randint(20, 28)
+                nx = np.random.randint(16, 24)
+                ny = np.random.randint(6, 10)
+                nz = np.random.randint(12, 18)
             elif geom in ("3dload", "offset"):
                 nx = np.random.randint(22, 32)
                 ny = np.random.randint(8, 12)

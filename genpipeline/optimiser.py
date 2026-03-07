@@ -9,7 +9,7 @@ from .schema import PipelineConfig
 logger = logging.getLogger(__name__)
 
 
-def run_optimisation(config: PipelineConfig, topo_refine: bool = False):
+def run_optimisation(config: PipelineConfig, topo_refine: bool = False, q: int = None):
     """Orchestrate the design optimisation loop using the unified config."""
     logger.info(
         f"Starting optimisation: iterations={config.n_optimisation_iterations}, topo_refine={topo_refine}"
@@ -51,9 +51,14 @@ def run_optimisation(config: PipelineConfig, topo_refine: bool = False):
         topo_refine=topo_refine,
     )
 
+    import os
+    effective_q = q if q is not None else os.cpu_count()
+    logger.info(f"Parallel FEM workers (q): {effective_q}")
+
     # Run optimization
     best_z, results = optimizer.run_optimisation(
-        n_iterations=config.n_optimisation_iterations, output_dir=config.output_dir
+        n_iterations=config.n_optimisation_iterations, output_dir=config.output_dir,
+        q=effective_q,
     )
 
     return best_z, results

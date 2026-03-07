@@ -9,6 +9,7 @@ Usage:
     python rebuild_dataset.py
     python rebuild_dataset.py --resolution 64 --fem-dir ./fem_data
 """
+
 import argparse
 import json
 import logging
@@ -30,6 +31,7 @@ log = logging.getLogger(__name__)
 def load_pairs(fem_dir: Path, min_stress: float = 1.0) -> list:
     """Return list of (stl_path, metrics_dict, stem) for all valid paired files."""
     import pandas as pd
+
     pairs = []
     by_geom: dict = {}
     skipped = 0
@@ -39,24 +41,32 @@ def load_pairs(fem_dir: Path, min_stress: float = 1.0) -> list:
         log.info(f"Loading results from Parquet: {parquet_path}")
         df = pd.read_parquet(parquet_path)
         for _, row in df.iterrows():
-            stem = row['source_file'].replace("_fem_results.json", "") if 'source_file' in row else Path(row['geometry_path']).stem.replace("_mesh", "")
-            stl_path = Path(row['geometry_path'])
-            
+            stem = (
+                row["source_file"].replace("_fem_results.json", "")
+                if "source_file" in row
+                else Path(row["geometry_path"]).stem.replace("_mesh", "")
+            )
+            stl_path = Path(row["geometry_path"])
+
             if not stl_path.exists():
                 skipped += 1
                 continue
-                
+
             if row.get("stress_max", 0) < min_stress and row.get("compliance", 0) == 0:
                 skipped += 1
                 continue
-                
+
             metrics = {
                 "stress_max": row.get("stress_max", 0),
                 "stress_mean": row.get("stress_mean", 0),
                 "compliance": row.get("compliance", 0),
                 "mass": row.get("mass", 0),
-                "parameters": {k.replace("param_", ""): v for k, v in row.items() if k.startswith("param_")},
-                "bbox": None # or load if available
+                "parameters": {
+                    k.replace("param_", ""): v
+                    for k, v in row.items()
+                    if k.startswith("param_")
+                },
+                "bbox": None,  # or load if available
             }
             pairs.append((stl_path, metrics, stem))
             geom = stem[:4]
@@ -78,7 +88,9 @@ def load_pairs(fem_dir: Path, min_stress: float = 1.0) -> list:
             by_geom[geom] = by_geom.get(geom, 0) + 1
 
     log.info(f"Found {len(pairs)} valid pairs (skipped {skipped} empty/unmatched)")
-    log.info("By geometry: " + "  ".join(f"{k}={v}" for k, v in sorted(by_geom.items())))
+    log.info(
+        "By geometry: " + "  ".join(f"{k}={v}" for k, v in sorted(by_geom.items()))
+    )
     return pairs
 
 
@@ -94,6 +106,10 @@ def build_samples(pairs: list, resolution: int) -> list:
         if grid.max() == 0:
             log.warning(f"  Empty voxel: {stl_path.name}")
             continue
+        # Skip samples with invalid voxel sizes
+        if grid.shape[0] < 8 or grid.shape[1] < 8 or grid.shape[2] < 8:
+            log.warning(f"  Skipping small voxel: {stl_path.name} shape={grid.shape}")
+            continue
         # Parse parameters
         params_dict = d.get("parameters", {})
         # Map common names if needed or use defaults
@@ -102,7 +118,7 @@ def build_samples(pairs: list, resolution: int) -> list:
             r_mm=params_dict.get("r_mm", 2.0),
             geometry_type=params_dict.get("geometry_type", "cantilever"),
             material_name=params_dict.get("material_name", "Plastic_ABS"),
-            material_cfg=params_dict.get("material_cfg")
+            material_cfg=params_dict.get("material_cfg"),
         )
 
         # Parse metrics
@@ -112,15 +128,17 @@ def build_samples(pairs: list, resolution: int) -> list:
             compliance=float(d.get("compliance", 0)),
             mass=float(d.get("mass", 1.0)),
             bbox=d.get("bbox"),
-            success=True
+            success=True,
         )
 
-        samples.append(DesignSample(
-            geometry_path=str(stl_path),
-            metrics=m,
-            parameters=p,
-            voxel_grid=(grid * 255).astype(np.uint8)
-        ))
+        samples.append(
+            DesignSample(
+                geometry_path=str(stl_path),
+                metrics=m,
+                parameters=p,
+                voxel_grid=(grid * 255).astype(np.uint8),
+            )
+        )
     return samples
 
 
@@ -128,11 +146,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--fem-dir", type=str, default="./genpipeline/fem/data")
     parser.add_argument("--resolution", type=int, default=64)
-    parser.add_argument("--val-frac",   type=float, default=0.2)
-    parser.add_argument("--seed",       type=int, default=42)
+    parser.add_argument("--val-frac", type=float, default=0.2)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     from genpipeline.fem.data_pipeline import DataPipeline
+
     pipeline = DataPipeline(args.fem_dir, args.fem_dir)
 
     fem_dir = Path(args.fem_dir)
@@ -141,33 +160,51 @@ def main():
 
     log.info(f"Voxelizing {len(pairs)} meshes at {args.resolution}³ ...")
     samples = build_samples(pairs, args.resolution)
+
+    # Filter out samples with None values
+    valid_samples = []
+    for s in samples:
+        if s.geometry_path is None:
+            continue
+        if s.voxel_grid is None:
+            continue
+        if s.metrics is None:
+            continue
+        valid_samples.append(s)
+
+    samples = valid_samples
+    log.info(f"Valid samples after filtering: {len(samples)}")
+
+    if len(samples) == 0:
+        log.error("No valid samples found!")
+        return
+
     log.info(f"Valid samples: {len(samples)}")
 
     ds = FEMDataset(samples, voxel_resolution=args.resolution, use_sdf=False)
-    n_val   = max(1, int(len(ds) * args.val_frac))
+    n_val = max(1, int(len(ds) * args.val_frac))
     n_train = len(ds) - n_val
     train_ds, val_ds = torch.utils.data.random_split(
-        ds, [n_train, n_val],
+        ds,
+        [n_train, n_val],
         generator=torch.Generator().manual_seed(args.seed),
     )
 
-    # Loaders stored in checkpoint for quickstart.py --step 3 compatibility
-    train_loader = DataLoader(train_ds, batch_size=4, shuffle=True,  num_workers=0)
-    val_loader   = DataLoader(val_ds,   batch_size=4, shuffle=False, num_workers=0)
-
+    # Only save the dataset - loaders will be created fresh
     out = fem_dir / "fem_dataset.pt"
-    torch.save({
-        "dataset":      ds,
-        "train_loader": train_loader,
-        "val_loader":   val_loader,
-        "samples":      samples,
-    }, out)
+    torch.save(
+        {
+            "dataset": ds,
+            "samples": samples,
+        },
+        out,
+    )
     log.info(f"Saved {out}")
-    log.info(f"Train: {n_train}  Val: {n_val}  Total: {len(ds)}")
+    log.info(f"Total samples: {len(samples)}")
 
-    # Quick shape check
-    b = next(iter(DataLoader(train_ds, batch_size=2)))
-    log.info(f"Batch geometry: {b['geometry'].shape}  dtype: {b['geometry'].dtype}")
+    # Quick shape check - load a sample directly
+    sample = ds[0]
+    log.info(f"Sample geometry shape: {sample['geometry'].shape}")
 
 
 if __name__ == "__main__":

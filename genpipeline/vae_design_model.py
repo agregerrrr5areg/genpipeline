@@ -371,12 +371,15 @@ class VAETrainer:
                 mu_f = mu.float()
                 lv_f = logvar.float()
                 loss_kl = -0.5 * torch.mean(1 + lv_f - mu_f.pow(2) - lv_f.exp())
-                # p_pred expects 3 values: [stress, compliance, mass]
+                # Normalise perf to O(1) with log1p so MSE doesn't explode
+                # (stress ~1e5, compliance ~1e6 → ~12, ~14 → /15 → ~0-1)
                 if perf.dim() == 1:
-                    # Single metric (compliance) - expand to 3
                     perf = perf.unsqueeze(1).expand(-1, 3)
-                loss_perf = F.mse_loss(p_pred.float(), perf.float())
-                loss_pars = F.mse_loss(pr_pred.float(), pars.float())
+                perf_norm = torch.log1p(perf.float().clamp(min=0)) / 15.0
+                loss_perf = F.mse_loss(p_pred.float(), perf_norm)
+                # Normalise pars (h_mm ~5-25, r_mm ~0-10) to ~0-1
+                pars_norm = pars.float() / torch.tensor([25.0, 10.0], device=self.device)
+                loss_pars = F.mse_loss(pr_pred.float(), pars_norm)
 
                 loss = (
                     loss_rec
@@ -396,7 +399,7 @@ class VAETrainer:
             total_loss += loss.item()
             self._global_step += 1
 
-            if batch_idx % 10 == 0:
+            if True or batch_idx % 10 == 0:
                 lr_now = self.scheduler.get_last_lr()[0]
                 logger.info(
                     f"E{epoch} [{batch_idx}/{len(self.train_loader)}] "

@@ -26,10 +26,14 @@ import torch
 # Current workaround: BoTorch models on CPU for Blackwell
 botorch_device = torch.device("cpu")
 
-# Runtime check for Blackwell hardware
-BLACKWELL_CHECK = (
-    "Blackwell" in torch.cuda.get_device_name(0) if torch.cuda.is_available() else False
-)
+# Runtime check for Blackwell hardware (sm_120+).
+# Check compute capability — more reliable than marketing name strings.
+# "NVIDIA GeForce RTX 5080" doesn't contain "Blackwell" but is sm_120.
+if torch.cuda.is_available():
+    _major, _ = torch.cuda.get_device_capability(0)
+    BLACKWELL_CHECK = _major >= 12  # sm_120 = Blackwell
+else:
+    BLACKWELL_CHECK = False
 
 
 # Helper function to verify device compatibility
@@ -38,7 +42,7 @@ def verify_botorch_device():
     if not BLACKWELL_CHECK:
         return torch.device("cuda")
 
-    # Blackwell: force CPU for BoTorch
+    # Blackwell: force CPU for BoTorch (cublasDgemmStridedBatched broken)
     return torch.device("cpu")
 
 

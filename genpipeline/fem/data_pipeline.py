@@ -29,8 +29,48 @@ class VoxelGrid:
 
     def mesh_to_voxel(self, stl_path: str) -> np.ndarray:
         mesh = trimesh.load(stl_path)
-        voxels = mesh.voxelized(self.resolution)
-        return voxels.matrix.astype(np.float32)
+
+        # Fixed domain size (matching SIMP grid)
+        domain_size = (100.0, 20.0, 20.0)  # mm
+
+        # Create empty voxel grid
+        resolution = self.resolution
+        voxels = np.zeros(
+            (resolution, resolution // 5, resolution // 5), dtype=np.float32
+        )
+
+        # Fill voxels where mesh exists
+        # Scale factor from mesh coords to voxel coords
+        mesh_bounds = mesh.bounds
+        if mesh_bounds is not None and len(mesh.vertices) > 0:
+            min_pt = mesh_bounds[0]
+            max_pt = mesh_bounds[1]
+
+            # Scale and fill voxels
+            for vert in mesh.vertices:
+                # Map vertex to voxel grid
+                ix = int((vert[0] / domain_size[0]) * resolution)
+                iy = int((vert[1] / domain_size[1]) * (resolution // 5))
+                iz = int((vert[2] / domain_size[2]) * (resolution // 5))
+
+                if (
+                    0 <= ix < resolution
+                    and 0 <= iy < resolution // 5
+                    and 0 <= iz < resolution // 5
+                ):
+                    # Fill a small neighborhood
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            for dz in range(-1, 2):
+                                nx, ny, nz = ix + dx, iy + dy, iz + dz
+                                if (
+                                    0 <= nx < resolution
+                                    and 0 <= ny < resolution // 5
+                                    and 0 <= nz < resolution // 5
+                                ):
+                                    voxels[nx, ny, nz] = 1.0
+
+        return voxels
 
 
 class FEMResultParser:
@@ -57,14 +97,29 @@ class FEMDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
+        from scipy.ndimage import zoom
+
         sample = self.samples[idx]
-        voxel = (
-            sample.voxel_grid
-            if sample.voxel_grid is not None
-            else np.zeros(
-                (self.voxel_resolution, self.voxel_resolution, self.voxel_resolution)
+
+        # Handle None or invalid voxel grids
+        voxel = sample.voxel_grid
+        if voxel is None or not isinstance(voxel, np.ndarray) or voxel.size == 0:
+            voxel = np.zeros(
+                (self.voxel_resolution, self.voxel_resolution, self.voxel_resolution),
+                dtype=np.float32,
             )
-        )
+
+        # Resize to target resolution if the voxel grid is not cubic
+        r = self.voxel_resolution
+        if voxel.shape != (r, r, r):
+            factors = (r / voxel.shape[0], r / voxel.shape[1], r / voxel.shape[2])
+            voxel = zoom(voxel.astype(np.float32), factors, order=1)
+            voxel = (voxel > 0.5).astype(np.float32)
+
+        # Strip None values from parameters so collate doesn't fail
+        raw_params = sample.parameters.dict()
+        params = {k: v for k, v in raw_params.items() if v is not None}
+
         return {
             "geometry": voxel,
             "metrics": {
@@ -73,7 +128,7 @@ class FEMDataset(Dataset):
                 "compliance": sample.metrics.compliance,
                 "mass": sample.metrics.mass,
             },
-            "parameters": sample.parameters.dict(),
+            "parameters": params,
         }
 
 
@@ -147,10 +202,13 @@ class DataPipeline:
                     continue
 
                 import tempfile, os
+
                 with tempfile.TemporaryDirectory() as tmp:
-                    inp_path = os.path.join(tmp, 'mesh.inp')
+                    inp_path = os.path.join(tmp, "mesh.inp")
                     VoxelHexMesher.voxels_to_inp(voxel, output_path=inp_path)
-                    fem_result = VoxelHexMesher.run_ccx(inp_path, ccx_cmd='/usr/bin/ccx')
+                    fem_result = VoxelHexMesher.run_ccx(
+                        inp_path, ccx_cmd="/usr/bin/ccx"
+                    )
 
                 sample = DesignSample(
                     geometry_path=str(mesh_path),
@@ -182,7 +240,9 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="FEM data pipeline")
-    parser.add_argument("--designs-dir", required=True, help="Directory with STEP/STL files")
+    parser.add_argument(
+        "--designs-dir", required=True, help="Directory with STEP/STL files"
+    )
     parser.add_argument("--output-dir", default="./fem_data", help="Output directory")
     parser.add_argument("--force-reprocess", action="store_true")
     args = parser.parse_args()

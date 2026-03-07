@@ -52,6 +52,8 @@ class DenseGPUSolver:
         # Build filter
         self.H, self.Hs = self._build_filter()
 
+        self.last_compliance = 0.0
+
         # Try to load CUDA kernels
         self._load_cuda_kernels()
 
@@ -251,10 +253,11 @@ class DenseGPUSolver:
             else:
                 self._apply_bc(K, f, fixed_dofs)
 
-            # Solve (use dense Cholesky)
+            # Solve on CPU with numpy (thread-safe; avoids cuSOLVER concurrent-call crash)
             K_reg = K + torch.eye(self.n_dof, device=self.device) * 1e-5
-            L = torch.linalg.cholesky(K_reg)
-            u = torch.cholesky_solve(f.unsqueeze(1), L).squeeze()
+            K_np = K_reg.cpu().float().numpy()
+            f_np = f.cpu().float().numpy()
+            u = torch.from_numpy(np.linalg.solve(K_np, f_np)).to(self.device)
 
             # Sensitivity
             if self.use_cuda_kernels:
@@ -269,6 +272,9 @@ class DenseGPUSolver:
 
             # OC update
             x, xPhys = self._oc_update(x, xPhys, dc, volfrac)
+
+            # Track compliance (strain energy)
+            self.last_compliance = (u * f).sum().item()
 
             if (i + 1) % 5 == 0:
                 print(
